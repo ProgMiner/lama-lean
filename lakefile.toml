@@ -1,0 +1,15 @@
+name = "lama"
+version = "0.1.0"
+defaultTargets = ["lama"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.28.0-rc1"
+
+[[lean_lib]]
+name = "Lama"
+
+# [[lean_exe]]
+# name = "lama"
+# root = "Main"
