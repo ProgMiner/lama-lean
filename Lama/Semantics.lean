@@ -3,6 +3,12 @@ import Mathlib
 import Lama.Ast
 
 
+@[reducible, simp]
+def Option.toExcept {α : Type u} {ε : Type v} (e : ε)
+: Option α -> Except ε α
+| .none => .error e
+| .some x => .ok x
+
 @[reducible]
 def List.set? {α : Type u} (i : ℕ) (x : α) (xs : List α) : Option (List α) :=
   if i < xs.length
@@ -24,6 +30,14 @@ structure Box where
   cell : ℕ
 deriving Repr, DecidableEq, Inhabited, Hashable
 
+inductive Error where
+| metatheory
+| name
+| lvalue
+| type
+| runtime
+deriving Repr, DecidableEq, Inhabited, Hashable
+
 -- Pure value
 inductive RValue where
 | int (n : Int)
@@ -36,9 +50,9 @@ def RValue.toInt? : RValue -> Option Int
 | .box _ => .none
 
 @[reducible]
-def RValue.toNat? (x : RValue) : Option ℕ := do
-  let x <- x.toInt?
-  x.toNat?
+def RValue.toNat? (x : RValue) : Except Error ℕ := do
+  let x <- x.toInt?.toExcept .type
+  x.toNat?.toExcept .runtime
 
 @[reducible]
 def RValue.toBool? (x : RValue) : Option Bool := do
@@ -68,18 +82,18 @@ inductive BoxValue where
 
 @[reducible, simp]
 def BoxValue.assign (i : ℕ) (x : RValue)
-: BoxValue -> Option BoxValue
+: BoxValue -> Except Error BoxValue
 | str xs => do
   let x <- x.toNat?
-  let xs <- xs.set? i x.toUInt8
+  let xs <- (xs.set? i x.toUInt8).toExcept .runtime
   return str xs
 | arr xs => do
-  let xs <- xs.set? i x
+  let xs <- (xs.set? i x).toExcept .runtime
   return arr xs
 | sexp t xs => do
-  let xs <- xs.set? i x
+  let xs <- (xs.set? i x).toExcept .runtime
   return sexp t xs
-| closure _ _ _ => .none
+| closure _ _ _ => .error .type
 
 -- Memory
 structure Memory where
@@ -122,27 +136,27 @@ def EnvValue.toLookup (env : Environment) : EnvValue -> EnvLookup
 
 @[reducible, simp]
 def Environment.lookup (x : Ident) (mem : Memory)
-: Environment -> Option EnvLookup
-| empty => .none
+: Environment -> Except Error EnvLookup
+| empty => .error .name
 | closure b =>
   match mem b with
   | .closure xs _ _ => do
-    let x <- xs.lookup x
+    let x <- (xs.lookup x).toExcept .name
     return x.toLookup (closure b)
-  | _ => .none
+  | _ => .error .metatheory
 | scope xs env =>
   match xs.lookup x with
-  | .some x => .some $ x.toLookup (scope xs env)
+  | .some x => .ok $ x.toLookup (scope xs env)
   | .none => env.lookup x mem
 
 @[reducible]
-instance : CoeFun Environment (fun _ => Ident -> Memory -> Option EnvLookup) where
+instance : CoeFun Environment (fun _ => Ident -> Memory -> Except Error EnvLookup) where
   coe env := env.lookup
 
 @[reducible, simp]
 def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
-: Environment -> Option (Environment × Memory)
-| empty => .none
+: Environment -> Except Error (Environment × Memory)
+| empty => .error .name
 | closure b => do
   match mem b with
   | .closure xs params body =>
@@ -150,14 +164,14 @@ def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
     | .some (.var _) =>
       let xs := xs.insert x $ .var y
       let mem := mem.assign b $ .closure xs params body
-      .some (closure b, mem)
-    | _ => .none
-  | _ => .none
+      .ok (closure b, mem)
+    | _ => .error .name
+  | _ => .error .metatheory
 | scope xs env =>
   match xs.lookup x with
   | .some (.var _) =>
-    .some (env.scope $ xs.insert x (.var y), mem)
-  | .some (.fn _ _) => .none
+    .ok (env.scope $ xs.insert x (.var y), mem)
+  | .some (.fn _ _) => .error .name
   | .none => do
     let (env, mem) <- env.assign x y mem
     return (env.scope xs, mem)
@@ -175,10 +189,11 @@ def Environment.close (mem : Memory)
   return xs ∪ env
 
 @[reducible, simp]
-def Environment.pop : Environment -> Environment
-| empty => empty
-| closure _ => empty
-| scope _ env => env
+def Environment.pop
+: Environment -> Option Environment
+| empty => .none
+| closure _ => .none
+| scope _ env => .some env
 
 structure State where
   env : Environment
@@ -195,9 +210,9 @@ def State.pushEnv (st : State) (env : SimpleEnv) : State where
   mem := st.mem
 
 @[reducible]
-def State.popEnv (st : State) : State where
-  env := st.env.pop
-  mem := st.mem
+def State.popEnv (st : State) : Option State := do
+  let env <- st.env.pop
+  return { st with env }
 
 inductive LValue where
 | var (x : Ident)
@@ -215,20 +230,24 @@ def Value.toRValue? : Value -> Option RValue
 | .lvalue _ => .none
 
 @[reducible]
-def Value.toInt? (x : Value) : Option Int := do
-  (<- x.toRValue?).toInt?
+def Value.toInt? (x : Value) : Except Error Int := do
+  let x <- x.toRValue?.toExcept .lvalue
+  x.toInt?.toExcept .type
 
 @[reducible]
-def Value.toNat? (x : Value) : Option Nat := do
-  (<- x.toRValue?).toNat?
+def Value.toNat? (x : Value) : Except Error Nat := do
+  let x <- x.toRValue?.toExcept .lvalue
+  x.toNat?
 
 @[reducible]
-def Value.toBool? (x : Value) : Option Bool := do
-  (<- x.toRValue?).toBool?
+def Value.toBool? (x : Value) : Except Error Bool := do
+  let x <- x.toRValue?.toExcept .lvalue
+  x.toBool?.toExcept .type
 
 @[reducible]
-def Value.toBox? (x : Value) : Option Box := do
-  (<- x.toRValue?).toBox?
+def Value.toBox? (x : Value) : Except Error Box := do
+  let x <- x.toRValue?.toExcept .lvalue
+  x.toBox?.toExcept .type
 
 @[reducible, simp]
 def Value.toLValue? : Value -> Option LValue
@@ -237,7 +256,7 @@ def Value.toLValue? : Value -> Option LValue
 
 inductive Result (V : Type) where
 | ok (x : V) (st : State)
-| err
+| err (err : Error)
 deriving Inhabited
 
 @[reducible, simp]
@@ -245,29 +264,50 @@ def Result.popEnv : Result Value -> Result Value
 | ok (.lvalue (.var x)) st =>
   match st.env with
   | .scope xs _ =>
-    if x ∈ xs then .err
-    else .ok (.lvalue $ .var x) st.popEnv
-  | _ => .ok (.lvalue $ .var x) st.popEnv
-| ok x st => ok x st.popEnv
+    if x ∈ xs then .err .lvalue
+    else match st.popEnv with
+    | .none => .err .metatheory
+    | .some st => .ok (.lvalue $ .var x) st
+  | _ =>
+    match st.popEnv with
+    | .none => .err .metatheory
+    | .some st => .ok (.lvalue $ .var x) st
+| ok x st =>
+  match st.popEnv with
+  | .none => .err .metatheory
+  | .some st => ok x st
 | res => res
 
+@[reducible, simp]
+def Result.toExcept {V : Type}
+: Result V -> Except Error (V × State)
+| ok x st => .ok (x, st)
+| err e => .error e
+
+@[reducible, simp]
+def Result.ofExcept {V : Type}
+: Except Error (V × State) -> Result V
+| .ok (x, st) => .ok x st
+| .error e => .err e
+
 @[reducible]
-def evalVar (st : State) (x : Ident) : Option (RValue × State) := do
+def evalVar (st : State) (x : Ident) : Except Error (RValue × State) := do
   match <- st.env x st.mem with
   | .var x => return (x, st)
   | .fn env params body =>
-    let env <- env.close st.mem
+    let env <- (env.close st.mem).toExcept .metatheory
     let (box, st) := st.allocWith $ .closure env params body
     return (.box box, st)
 
 @[reducible]
-def checkRef (st : State) (x : Ident) : Bool :=
+def checkRef (st : State) (x : Ident) : Option Error :=
   match st.env x st.mem with
-  | .some (.var _) => true
-  | _ => false
+  | .ok (.var _) => .none
+  | .ok _ => .some .name
+  | .error e => .some e
 
 @[reducible, simp]
-def evalBinop (x y : Value) :  Binop -> Option RValue
+def evalBinop (x y : Value) :  Binop -> Except Error RValue
 | .or => do
   let x <- x.toBool?
   let y <- y.toBool?
@@ -277,12 +317,12 @@ def evalBinop (x y : Value) :  Binop -> Option RValue
   let y <- y.toBool?
   return .int (x && y).toInt
 | .eq => do
-  let x <- x.toRValue?
-  let y <- y.toRValue?
+  let x <- x.toRValue?.toExcept .lvalue
+  let y <- y.toRValue?.toExcept .lvalue
   return .int (x = y : Bool).toInt
 | .ne => do
-  let x <- x.toRValue?
-  let y <- y.toRValue?
+  let x <- x.toRValue?.toExcept .lvalue
+  let y <- y.toRValue?.toExcept .lvalue
   return .int (x ≠ y : Bool).toInt
 | .le => do
   let x <- x.toInt?
@@ -322,57 +362,65 @@ def evalBinop (x y : Value) :  Binop -> Option RValue
   return .int $ x.tmod y
 
 @[reducible]
-def evalElem (mem : Memory) (x y : Value) : Option RValue := do
+def evalElem (mem : Memory) (x y : Value) : Except Error RValue := do
   let x <- x.toBox?
   let y <- y.toNat?
   match mem x with
   | .str xs =>
-    let z <- xs[y]?
+    let z <- xs[y]?.toExcept .runtime
     return .int z.toNat
-  | .arr xs => xs[y]?
-  | .sexp _ xs => xs[y]?
-  | .closure _ _ _ => .none
+  | .arr xs => xs[y]?.toExcept .runtime
+  | .sexp _ xs => xs[y]?.toExcept .runtime
+  | .closure _ _ _ => .error .type
 
 @[reducible]
-def evalElemRefR (mem : Memory) (x y : RValue) : Option LValue := do
-  let x <- x.toBox?
+def evalElemRefR (mem : Memory) (x y : RValue) : Except Error LValue := do
+  let x <- x.toBox?.toExcept .type
   let y <- y.toNat?
-  let ok : Bool := match mem x with
-  | .str xs => y < xs.size
-  | .arr xs => y < xs.length
-  | .sexp _ xs => y < xs.length
-  | .closure _ _ _ => false
-  if ok then return .elem x y
-  else .none
+  match mem x with
+  | .str xs =>
+    if y < xs.size then return .elem x y
+    else .error .runtime
+  | .arr xs =>
+    if y < xs.length then return .elem x y
+    else .error .runtime
+  | .sexp _ xs =>
+    if y < xs.length then return .elem x y
+    else .error .runtime
+  | .closure _ _ _ => .error .type
 
 @[reducible]
-def evalElemRef (mem : Memory) (x y : Value) : Option LValue := do
-  evalElemRefR mem (<- x.toRValue?) (<- y.toRValue?)
+def evalElemRef (mem : Memory) (x y : Value) : Except Error LValue := do
+  let x <- x.toRValue?.toExcept .lvalue
+  let y <- y.toRValue?.toExcept .lvalue
+  evalElemRefR mem x y
 
 @[reducible]
 def prepareCall (mem : Memory) (x : Value) (xs : List RValue)
-: Option (State × Expr) := do
+: Except Error (State × Expr) := do
   let x <- x.toBox?
   match mem x with
   | .closure _ params body =>
     let args := List.zip params xs
-    if args.length < params.length then .none
+    if args.length < params.length
+    then .error .type
     else
       let env := List.foldl (fun acc (x, y) => acc.insert x (.var y)) ∅ args
       let st := { env := (Environment.closure x).scope env, mem }
       return (st, body)
-  | _ => .none
+  | _ => .error .type
 
 @[reducible]
 def commitCall (env : Environment) (mem : Memory) (x : Value)
 : Result Value :=
   match x.toRValue? with
   | .some x => .ok (.rvalue x) { env, mem }
-  | .none => .err
+  | .none => .err .lvalue
 
 @[reducible]
-def evalAssignR (st : State) (x : Value) (y : RValue) : Option State := do
-  match <- x.toLValue? with
+def evalAssignR (st : State) (x : Value) (y : RValue)
+: Except Error State := do
+  match <- x.toLValue?.toExcept .lvalue with
   | .var x =>
     let (env, mem) <- st.env.assign x y st.mem
     return { mem, env }
@@ -381,8 +429,9 @@ def evalAssignR (st : State) (x : Value) (y : RValue) : Option State := do
     return { st with mem := st.mem.assign x y }
 
 @[reducible]
-def evalAssign (st : State) (x y : Value) : Option (State × RValue) := do
-  let y <- y.toRValue?
+def evalAssign (st : State) (x y : Value)
+: Except Error (State × RValue) := do
+  let y <- y.toRValue?.toExcept .lvalue
   let st <- evalAssignR st x y
   return (st, y)
 
@@ -465,8 +514,10 @@ def chooseCaseR (mem : Memory) (x : RValue)
   | .none => chooseCaseR mem x bs
 
 @[reducible]
-def chooseCase (mem : Memory) (x : Value) (bs : List (Pattern × Expr)) := do
-  chooseCaseR mem (<- x.toRValue?) bs
+def chooseCase (mem : Memory) (x : Value) (bs : List (Pattern × Expr))
+: Except Error (SimpleEnv × Expr) := do
+  let x <- x.toRValue?.toExcept .lvalue
+  (chooseCaseR mem x bs).toExcept .runtime -- or .type ???
 
 @[reducible, simp]
 def prepareDefList : List Definition -> SimpleEnv × Expr
@@ -489,17 +540,17 @@ mutual
 inductive Eval : State -> Expr -> Result Value -> Prop where
 | skip st : Eval st .skip (.ok (.rvalue $ .int 0) st)
 | varOk st st' x y
-  : evalVar st x = .some (y, st')
+  : evalVar st x = .ok (y, st')
  -> Eval st (.var x) (.ok (.rvalue y) st')
-| varErr st x
-  : evalVar st x = .none
- -> Eval st (.var x) .err
+| varErr st x e
+  : evalVar st x = .error e
+ -> Eval st (.var x) (.err e)
 | refOk st x
-  : checkRef st x
+  : checkRef st x = .none
  -> Eval st (.ref x) (.ok (.lvalue (.var x)) st)
-| refErr st x
-  : ¬ checkRef st x
- -> Eval st (.ref x) .err
+| refErr st x e
+  : checkRef st x = .some e
+ -> Eval st (.ref x) (.err e)
 | int st n : Eval st (.int n) (.ok (.rvalue $ .int n) st)
 | str st st' s box
   : st.allocWith (.str s.toByteArray) = (box, st')
@@ -508,173 +559,173 @@ inductive Eval : State -> Expr -> Result Value -> Prop where
   : EvalList st₁ xs (.ok ys st₂)
  -> st₂.allocWith (.arr ys) = (box, st₃)
  -> Eval st₁ (.arr xs) (.ok (.rvalue $ .box box) st₃)
-| arrErr st xs
-  : EvalList st xs .err
- -> Eval st (.arr xs) .err
+| arrErr st xs e
+  : EvalList st xs (.err e)
+ -> Eval st (.arr xs) (.err e)
 | sexpOk st₁ st₂ st₃ t xs ys box
   : EvalList st₁ xs (.ok ys st₂)
  -> st₂.allocWith (.sexp t ys) = (box, st₃)
  -> Eval st₁ (.sexp t xs) (.ok (.rvalue $ .box box) st₃)
-| sexpErr st t xs
-  : EvalList st xs .err
- -> Eval st (.sexp t xs) .err
+| sexpErr st t xs e
+  : EvalList st xs (.err e)
+ -> Eval st (.sexp t xs) (.err e)
 | lambdaOk st st' xs x box env
   : st.env.close st.mem = .some env
  -> st.allocWith (.closure env xs x) = (box, st')
  -> Eval st (.lambda xs x) (.ok (.rvalue $ .box box) st')
 | lambdaErr st xs x
   : st.env.close st.mem = .none
- -> Eval st (.lambda xs x) .err
+ -> Eval st (.lambda xs x) (.err .metatheory)
 | binopOk st₁ st₂ st₃ op x₁ x₂ y₁ y₂ z
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalBinop y₁ y₂ op = .some z
+ -> evalBinop y₁ y₂ op = .ok z
  -> Eval st₁ (.binop op x₁ x₂) (.ok (.rvalue z) st₃)
-| binopErr st₁ st₂ st₃ op x₁ x₂ y₁ y₂
+| binopErr st₁ st₂ st₃ op x₁ x₂ y₁ y₂ e
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalBinop y₁ y₂ op = .none
- -> Eval st₁ (.binop op x₁ x₂) .err
-| binopErrL st op x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.binop op x₁ x₂) .err
-| binopErrR st st' op x₁ x₂ y₁
+ -> evalBinop y₁ y₂ op = (.error e)
+ -> Eval st₁ (.binop op x₁ x₂) (.err e)
+| binopErrL st op x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.binop op x₁ x₂) (.err e)
+| binopErrR st st' op x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> Eval st' x₂ .err
- -> Eval st (.binop op x₁ x₂) .err
+ -> Eval st' x₂ (.err e)
+ -> Eval st (.binop op x₁ x₂) (.err e)
 | elemOk st₁ st₂ st₃ x₁ x₂ y₁ y₂ z
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElem st₃.mem y₁ y₂ = .some z
+ -> evalElem st₃.mem y₁ y₂ = .ok z
  -> Eval st₁ (.elem x₁ x₂) (.ok (.rvalue z) st₃)
-| elemErr st₁ st₂ st₃ x₁ x₂ y₁ y₂
+| elemErr st₁ st₂ st₃ x₁ x₂ y₁ y₂ e
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElem st₃.mem y₁ y₂ = .none
- -> Eval st₁ (.elem x₁ x₂) .err
-| elemErrL st x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.elem x₁ x₂) .err
-| elemErrR st st' x₁ x₂ y₁
+ -> evalElem st₃.mem y₁ y₂ = .error e
+ -> Eval st₁ (.elem x₁ x₂) (.err e)
+| elemErrL st x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.elem x₁ x₂) (.err e)
+| elemErrR st st' x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> Eval st' x₂ .err
- -> Eval st (.elem x₁ x₂) .err
+ -> Eval st' x₂ (.err e)
+ -> Eval st (.elem x₁ x₂) (.err e)
 | elemRefOk st₁ st₂ st₃ x₁ x₂ y₁ y₂ z
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElemRef st₃.mem y₁ y₂ = .some z
+ -> evalElemRef st₃.mem y₁ y₂ = .ok z
  -> Eval st₁ (.elemRef x₁ x₂) (.ok (.lvalue z) st₃)
-| elemRefErr st₁ st₂ st₃ x₁ x₂ y₁ y₂
+| elemRefErr st₁ st₂ st₃ x₁ x₂ y₁ y₂ e
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElemRef st₃.mem y₁ y₂ = .none
- -> Eval st₁ (.elemRef x₁ x₂) .err
-| elemRefErrL st x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.elemRef x₁ x₂) .err
-| elemRefErrR st st' x₁ x₂ y₁
+ -> evalElemRef st₃.mem y₁ y₂ = .error e
+ -> Eval st₁ (.elemRef x₁ x₂) (.err e)
+| elemRefErrL st x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.elemRef x₁ x₂) (.err e)
+| elemRefErrR st st' x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> Eval st' x₂ .err
- -> Eval st (.elemRef x₁ x₂) .err
+ -> Eval st' x₂ (.err e)
+ -> Eval st (.elemRef x₁ x₂) (.err e)
 | callOk st₁ st₂ st₃ st₄ st₅ x xs y ys z z'
   : Eval st₁ x (.ok y st₂)
  -> EvalList st₂ xs (.ok ys st₃)
- -> prepareCall st₃.mem y ys = .some (st₄, z)
+ -> prepareCall st₃.mem y ys = .ok (st₄, z)
  -> Eval st₄ z (.ok z' st₅)
  -> Eval st₁ (.call x xs) (commitCall st₃.env st₅.mem z')
-| callErr₁ st x xs
-  : Eval st x .err
- -> Eval st (.call x xs) .err
-| callErr₂ st st' x xs y
+| callErr₁ st x xs e
+  : Eval st x (.err e)
+ -> Eval st (.call x xs) (.err e)
+| callErr₂ st st' x xs y e
   : Eval st x (.ok y st')
- -> EvalList st' xs .err
- -> Eval st (.call x xs) .err
-| callErr₃ st₁ st₂ st₃ x xs y ys
+ -> EvalList st' xs (.err e)
+ -> Eval st (.call x xs) (.err e)
+| callErr₃ st₁ st₂ st₃ x xs y ys e
   : Eval st₁ x (.ok y st₂)
  -> EvalList st₂ xs (.ok ys st₃)
- -> prepareCall st₃.mem y ys = .none
- -> Eval st₁ (.call x xs) .err
-| callErr₄ st₁ st₂ st₃ st₄ x xs y ys z
+ -> prepareCall st₃.mem y ys = .error e
+ -> Eval st₁ (.call x xs) (.err e)
+| callErr₄ st₁ st₂ st₃ st₄ x xs y ys z e
   : Eval st₁ x (.ok y st₂)
  -> EvalList st₂ xs (.ok ys st₃)
- -> prepareCall st₃.mem y ys = .some (st₄, z)
- -> Eval st₄ z .err
- -> Eval st₁ (.call x xs) .err
+ -> prepareCall st₃.mem y ys = .ok (st₄, z)
+ -> Eval st₄ z (.err e)
+ -> Eval st₁ (.call x xs) (.err e)
 | assignOk st₁ st₂ st₃ st₄ x₁ x₂ y₁ y₂ z
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalAssign st₃ y₁ y₂ = .some (st₄, z)
+ -> evalAssign st₃ y₁ y₂ = .ok (st₄, z)
  -> Eval st₁ (.assign x₁ x₂) (.ok (.rvalue z) st₄)
-| assignErr st₁ st₂ st₃ x₁ x₂ y₁ y₂
+| assignErr st₁ st₂ st₃ x₁ x₂ y₁ y₂ e
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalAssign st₃ y₁ y₂ = .none
- -> Eval st₁ (.assign x₁ x₂) .err
-| assignErrL st x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.assign x₁ x₂) .err
-| assignErrR st st' x₁ x₂ y₁
+ -> evalAssign st₃ y₁ y₂ = .error e
+ -> Eval st₁ (.assign x₁ x₂) (.err e)
+| assignErrL st x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.assign x₁ x₂) (.err e)
+| assignErrR st st' x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> Eval st' x₂ .err
- -> Eval st (.assign x₁ x₂) .err
+ -> Eval st' x₂ (.err e)
+ -> Eval st (.assign x₁ x₂) (.err e)
 | seqOk st₁ st₂ x₁ x₂ y₁ res
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ res
  -> Eval st₁ (.seq x₁ x₂) res
-| seqErr st x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.seq x₁ x₂) .err
+| seqErr st x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.seq x₁ x₂) (.err e)
 | iteThen st st' x₁ x₂ x₃ y₁ res
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .some true
+ -> y₁.toBool? = .ok true
  -> Eval st' x₂ res
  -> Eval st (.ite x₁ x₂ x₃) res
 | iteElse st st' x₁ x₂ x₃ y₁ res
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .some false
+ -> y₁.toBool? = .ok false
  -> Eval st' x₃ res
  -> Eval st (.ite x₁ x₂ x₃) res
-| iteErr₁ st x₁ x₂ x₃
-  : Eval st x₁ .err
- -> Eval st (.ite x₁ x₂ x₃) .err
-| iteErr₂ st st' x₁ x₂ x₃ y₁
+| iteErr₁ st x₁ x₂ x₃ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.ite x₁ x₂ x₃) (.err e)
+| iteErr₂ st st' x₁ x₂ x₃ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .none
- -> Eval st (.ite x₁ x₂ x₃) .err
+ -> y₁.toBool? = .error e
+ -> Eval st (.ite x₁ x₂ x₃) (.err e)
 | loopCont st₁ st₂ st₃ x₁ x₂ y₁ y₂ res
   : Eval st₁ x₁ (.ok y₁ st₂)
- -> y₁.toBool? = .some true
+ -> y₁.toBool? = .ok true
  -> Eval st₂ x₂ (.ok y₂ st₃)
  -> Eval st₃ (.loop x₁ x₂) res
  -> Eval st₁ (.loop x₁ x₂) res
 | loopStop st st' x₁ x₂ y₁
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .some false
+ -> y₁.toBool? = .ok false
  -> Eval st (.loop x₁ x₂) (.ok (.rvalue $ .int 0) st')
-| loopErr st st' x₁ x₂ y₁
+| loopErr st st' x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .none
- -> Eval st (.loop x₁ x₂) .err
-| loopErrL st x₁ x₂
-  : Eval st x₁ .err
- -> Eval st (.loop x₁ x₂) .err
-| loopErrR st st' x₁ x₂ y₁
+ -> y₁.toBool? = .error e
+ -> Eval st (.loop x₁ x₂) (.err e)
+| loopErrL st x₁ x₂ e
+  : Eval st x₁ (.err e)
+ -> Eval st (.loop x₁ x₂) (.err e)
+| loopErrR st st' x₁ x₂ y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> y₁.toBool? = .some true
- -> Eval st' x₂ .err
- -> Eval st (.loop x₁ x₂) .err
+ -> y₁.toBool? = .ok true
+ -> Eval st' x₂ (.err e)
+ -> Eval st (.loop x₁ x₂) (.err e)
 | caseOk st st' x₁ bs y₁ env x₂ res
   : Eval st x₁ (.ok y₁ st')
- -> chooseCase st'.mem y₁ bs = .some (env, x₂)
+ -> chooseCase st'.mem y₁ bs = .ok (env, x₂)
  -> Eval (st'.pushEnv env) x₂ res
  -> Eval st (.case x₁ bs) res.popEnv
-| caseErr₁ st x₁ bs
-  : Eval st x₁ .err
- -> Eval st (.case x₁ bs) .err
-| caseErr₂ st st' x₁ bs y₁
+| caseErr₁ st x₁ bs e
+  : Eval st x₁ (.err e)
+ -> Eval st (.case x₁ bs) (.err e)
+| caseErr₂ st st' x₁ bs y₁ e
   : Eval st x₁ (.ok y₁ st')
- -> chooseCase st'.mem y₁ bs = .none
- -> Eval st (.case x₁ bs) .err
+ -> chooseCase st'.mem y₁ bs = .error e
+ -> Eval st (.case x₁ bs) (.err e)
 | scope st x₁ env x₂ res
   : prepareDefList x₁.defs = (env, x₂)
  -> Eval (st.pushEnv env) (.seq x₂ x₁.body) res
@@ -688,13 +739,13 @@ inductive EvalList : State -> List Expr -> Result (List RValue) -> Prop where
  -> EvalList st₁ (x::xs) (.ok (y::ys) st₃)
 | err st st' x xs y
   : Eval st x (.ok (.lvalue y) st')
- -> EvalList st (x::xs) .err
-| errL st x xs
-  : Eval st x .err
- -> EvalList st (x::xs) .err
-| errR st st' x xs y
+ -> EvalList st (x::xs) (.err .lvalue)
+| errL st x xs e
+  : Eval st x (.err e)
+ -> EvalList st (x::xs) (.err e)
+| errR st st' x xs y e
   : Eval st x (.ok y st')
- -> EvalList st' xs .err
- -> EvalList st (x::xs) .err
+ -> EvalList st' xs (.err e)
+ -> EvalList st (x::xs) (.err e)
 
 end

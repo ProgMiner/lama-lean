@@ -16,6 +16,7 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Ast/Pattern.lean` — `Pattern` (12 constructors: wildcard, const, string, array, sexp, named, 6 type-tags)
 - `Lama/Ast/Expr.lean` — Mutual `Expr`/`Scope`/`Definition` + `abbrev Program := Scope`
 - `Lama/Ast.lean` — Umbrella module
+- `Lama/Semantics.lean` — Dynamic semantics: `Memory`, `Environment`, `State`, `Value`/`RValue`/`LValue`, `Eval`/`EvalList` relations, `Error` classification
 - `Lama.lean` — Root, imports `Lama.Ast` and `Lama.Semantics`
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
 - Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch)
@@ -151,6 +152,30 @@ The Lean AST models a **post-attribution core** — the result after reference i
 - `Ignore` — covered by `seq` (its `fst` is implicitly discarded)
 - `Leave` — scope exit handled implicitly at the end of `Scope.body` evaluation
 - `DoWhile` — desugars to `Seq(body, While(cond, body))`
+
+## Error Classification
+
+The `Error` inductive in `Lama/Semantics.lean` classifies runtime failures into 5 categories. The `Result` type carries `Error` in its `.err` constructor (`Result.err (err : Error)`); evaluation helpers (`evalVar`, `evalBinop`, `evalElem`, `evalElemRef`, `evalAssign`, `prepareCall`, `chooseCase`, etc.) return `Except Error α` to thread the error kind through monadic combinators. The `Option.toExcept` helper (`.none → .error e`, `.some x → .ok x`) bridges `Option`-returning primitives into the `Except Error` monad, tagging each `.none` with the appropriate `Error`. `Result.toExcept`/`ofExcept` convert between `Result V` and `Except Error (V × State)`.
+
+### Error categories
+
+| Constructor | Meaning | Triggered by |
+|---|---|---|
+| `.metatheory` | Internal invariant violation — an impossible state that should never arise in a well-formed evaluation. Indicates a bug in the metatheory/model, not a user-facing runtime error. | `Environment.pop` returning `.none` in `Result.popEnv` (trying to pop a non-`scope` frame after `case`/`scope` body evaluation — `pop` returns `.none` for `empty`/`closure`); malformed closure box in `Environment.lookup`/`assign` (Environment is `closure b` but `mem b` is not `.closure`) and in `Environment.close` (`evalVar`, `lambdaErr`) — these can only arise from a bug in the metatheory, since `closure b` environments are constructed only in `prepareCall` after verifying `mem b = .closure …`, and normal evaluation never overwrites a closure box with a non-closure value. |
+| `.name` | Name resolution failure — a variable name is either not found in the environment, or designates a function (not a variable). Matches the interpreter's `"name is undefined or does not designate a variable"`. | `Environment.lookup empty`, `Environment.lookup`/`assign` name-not-found-in-closure-scope, `Environment.assign` on a function binding (`.some (.fn _ _) => .error .name`), `checkRef` when the name denotes a function. |
+| `.lvalue` | L-value / R-value category mismatch — an l-value appears where an r-value is expected. Also covers escaping local l-values (a `ref x` that survives the scope where `x` is bound — see "Escaping local l-values" in Model Adequacy Limits). | `Value.toRValue?` returning `.none` (in `evalBinop` `.eq`/`.ne`, `evalElem`, `evalElemRef`, `evalAssign` RHS, `chooseCase` scrutinee), `EvalList.err` (l-value in expression list), `Result.popEnv` escaping-local check (`x ∈ xs`), `commitCall` when function body returns an l-value. |
+| `.type` | Structural type mismatch — a value of the wrong `RValue`/`BoxValue` variant for the operation. Not a static type error (the model has no static type system), but a runtime "wrong kind of value" error. | `RValue.toInt?` on a `.box` (via `toExcept .type` in `RValue.toNat?`, `Value.toInt?`, `Value.toBool?`), `Value.toBox?` on an `.int`, indexing a `.closure` (`evalElem`, `evalElemRefR`, `BoxValue.assign`), calling a non-closure (`prepareCall`), too few call arguments (`prepareCall` arity check). |
+| `.runtime` | Runtime resource error — index out of bounds, negative index, or pattern-match failure. The operation is type-correct but fails due to runtime conditions. | `List.set?`/`ByteArray.set?` out of bounds (`BoxValue.assign`), `xs[y]?` out of bounds (`evalElem`, `evalElemRefR` bounds checks), negative integer to `Nat` (`RValue.toNat?`: `x.toNat?.toExcept .runtime`), no pattern matches in `case` (`chooseCase`). |
+
+### Error propagation in `Eval`/`EvalList`
+
+Error rules in the `Eval` inductive carry the error kind as a parameter (`varErr st x e`, `binopErr ... e`, `callErr₃ ... e`, etc.), preserving the classification through the derivation tree. Left-operand errors propagate the same error kind (`binopErrL ... e`, `assignErrL ... e`, etc.). Right-operand errors also propagate (`binopErrR ... e`, `loopErrR ... e`, etc.). `EvalList.err` hardcodes `.lvalue` for the l-value-in-list case; `errL`/`errR` propagate the error kind from the sub-evaluation.
+
+### Notes on specific classifications
+
+1. **`chooseCase` no-match → `.runtime`** (line 520): The code comment `-- or .type ???` marks an open question retained for future revisit if a static type system can recognize pattern-match exhaustiveness. `.runtime` is the correct classification under the current type-erased model — a non-exhaustive `case` (no pattern matches the scrutinee at runtime) is a runtime error, not a type error: the scrutinee's value kind is irrelevant; it simply doesn't match any pattern.
+
+2. **`prepareCall` too-few-arguments → `.type`** (line 406): Calling a closure with fewer arguments than parameters is classified as a structural type mismatch. This is defensible (arity as a structural property), but `.runtime` would also be reasonable (arity mismatch as a runtime contract violation). The current `.type` choice is a judgment call.
 
 ## Model Adequacy Limits
 
