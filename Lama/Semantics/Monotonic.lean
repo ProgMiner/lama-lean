@@ -111,6 +111,11 @@ def BoxValue.SameShape : BoxValue -> BoxValue -> Prop
   env₁.SameShape env₂ ∧ xs₁ = xs₂ ∧ b₁ = b₂
 | _, _ => False
 
+@[simp]
+theorem BoxValue.SameShape_undefined (x : BoxValue)
+: x.SameShape undefined <-> x = undefined := by
+  cases x <;> simp [SameShape]
+
 @[refl, simp]
 theorem BoxValue.SameShape_refl (x : BoxValue) : x.SameShape x := by
   cases x <;> simp [SameShape]
@@ -166,7 +171,7 @@ theorem BoxValue.assign_same_shape (x x' : BoxValue)
 
 structure Memory.LE (m m' : Memory) : Prop where
   bound : m.bound ≤ m'.bound
-  vals : ∀ b, b.cell < m.bound -> (m.mem b).SameShape (m'.mem b)
+  vals : ∀ b, b.cell < m.bound -> (m b).SameShape (m' b)
 
 @[reducible]
 instance : LE Memory where
@@ -193,6 +198,34 @@ instance : Preorder Memory where
     replace h₁ := h₁.2 _ hb
     replace h₂ := h₂.2 _ hb'
     trans <;> assumption
+
+theorem Memory.alloc_monotonic (mem : Memory)
+: mem ≤ mem.alloc.2 := by
+  simp [Memory.LE_iff]
+
+theorem Memory.assign_monotonic (mem : Memory)
+                                (box : Box) (value : BoxValue)
+                                (h : (mem box).SameShape value)
+: mem ≤ mem.assign box value := by
+  simp [Memory.LE_iff]
+  intro b hb
+  split_ifs with hb'
+  on_goal 2 => rfl
+  subst b
+  assumption
+
+theorem Memory.allocWith_monotonic (mem mem' : Memory)
+                                   (x : BoxValue) (b : Box)
+                                   (h : mem.allocWith x = (b, mem'))
+: mem ≤ mem' := by
+  simp at h
+  obtain ⟨ rfl, rfl ⟩ := h
+  simp [Memory.LE_iff]
+  intro b h
+  split_ifs with h'
+  on_goal 2 => simp
+  subst b
+  simp at h
 
 theorem Environment.assign_memory_monotonic (x : Ident) (y : RValue)
                                             (mem mem' : Memory) (env env' : Environment)
@@ -348,12 +381,26 @@ theorem State.allocWith_monotonic (st st' : State)
 : st ≤ st' := by
   simp at h
   obtain ⟨ rfl, rfl ⟩ := h
-  simp [State.LE_iff, Memory.LE_iff]
-  intro b h
-  split_ifs with h'
-  on_goal 2 => simp
-  subst b
-  simp at h
+  simp [State.LE_iff]
+  apply Memory.allocWith_monotonic
+  rfl
+
+theorem State.popEnv_state (r : Result Value) (x : Value) (st : State)
+                           (h : r.popEnv = Result.ok x st)
+: ∃ st' : State, r = .ok x st' ∧ st'.popEnv = .some st := by
+  unfold Result.popEnv at h
+  cases r with
+  | err => simp at h
+  | ok x' st' =>
+    split at h <;> rename_i h' <;> simp at h'
+    obtain ⟨ rfl, rfl ⟩ := h'
+    extract_lets at h
+    rename_i ok; clear_value ok
+    split_ifs at h
+    subst ok
+    split at h <;> simp at h
+    obtain ⟨ rfl, rfl ⟩ := h
+    use st'
 
 theorem evalVar_state_monotonic (st st' : State)
                                 (x : Ident) (y : RValue)
@@ -371,9 +418,20 @@ theorem evalVar_state_monotonic (st st' : State)
   generalize Environment.close st.mem env = env' at h
   cases env' <;> simp at h
   obtain ⟨ rfl, rfl ⟩ := h
-  change st ≤ (st.allocWith _).2
   apply State.allocWith_monotonic
   rfl
+
+theorem prepareCall_state (mem : Memory) (x : Value) (xs : List RValue)
+                          (st : State) (body : Expr)
+                          (h : prepareCall mem x xs = .ok (st, body))
+: mem = st.mem := by
+  unfold prepareCall at h
+  simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h
+  split at h <;> try simp at h
+  split at h <;> try simp at h
+  split at h <;> try simp at h
+  obtain ⟨ rfl, rfl ⟩ := h
+  simp
 
 theorem evalAssign_state_monotonic (st st' : State)
                                    (x y : Value) (z : RValue)
@@ -415,6 +473,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
                              (h : Eval st e (.ok x st'))
 : st ≤ st' := by
   generalize hr : Result.ok x st' = r at h
+  symm at hr
   induction h
   using Eval.rec (motive_2 := fun st es r _ => ∀ x st', .ok x st' = r -> st ≤ st')
   generalizing st' x with
@@ -493,16 +552,8 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
     cases z' <;> simp at hr
     obtain ⟨ rfl, rfl ⟩ := hr
     simp [State.LE_iff] at ih₃ ⊢
-    grw [<- ih₃.1]
-    suffices st₃.mem = st₄.mem by simp [this]
-    unfold prepareCall at h₃
-    simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h₃
-    split at h₃ <;> try simp at h₃
-    split at h₃ <;> try simp at h₃
-    split_ifs at h₃
-    simp at h₃
-    obtain ⟨ rfl, rfl ⟩ := h₃
-    simp
+    apply prepareCall_state at h₃
+    grw [<- ih₃.1, h₃]
   | callErr₁ => simp at hr
   | callErr₂ => simp at hr
   | callErr₃ => simp at hr
@@ -544,20 +595,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
   | loopErrL => simp at hr
   | loopErrR => simp at hr
   | caseOk st st' x₁ bs y₁ env x₂ res h₁ h₂ h₃ ih₁ ih₂ =>
-    replace hr : ∃ str, res = .ok x str ∧ str.popEnv = .some st' := by
-      unfold Result.popEnv at hr
-      cases res with
-      | err => simp at hr
-      | ok xr str =>
-        split at hr <;> rename_i h <;> simp at h
-        obtain ⟨ rfl, rfl ⟩ := h
-        extract_lets at hr
-        rename_i ok; clear_value ok
-        split_ifs at hr
-        subst ok
-        split at hr <;> simp at hr
-        obtain ⟨ rfl, rfl ⟩ := hr
-        use str
+    apply State.popEnv_state at hr
     obtain ⟨ str, rfl, hr ⟩ := hr
     simp at ih₁ ih₂
     grw [ih₁]
@@ -579,20 +617,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
   | caseErr₁ => simp at hr
   | caseErr₂ => simp at hr
   | scope st x₁ env x₂ res h₁ h₂ ih =>
-    replace hr : ∃ str, res = .ok x str ∧ str.popEnv = .some st' := by
-      unfold Result.popEnv at hr
-      cases res with
-      | err => simp at hr
-      | ok xr str =>
-        split at hr <;> rename_i h <;> simp at h
-        obtain ⟨ rfl, rfl ⟩ := h
-        extract_lets at hr
-        rename_i ok; clear_value ok
-        split_ifs at hr
-        subst ok
-        split at hr <;> simp at hr
-        obtain ⟨ rfl, rfl ⟩ := hr
-        use str
+    apply State.popEnv_state at hr
     obtain ⟨ str, rfl, hr ⟩ := hr
     simp at ih
     unfold State.popEnv at hr
@@ -622,3 +647,18 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
   | err _ _ _ _ _ _ _ _ _ hr => simp at hr
   | errL _ _ _ _ _ _ _ _ hr => simp at hr
   | errR _ _ _ _ _ _ _ _ _ _ _ _ hr => simp at hr
+
+theorem EvalList_state_monotonic (st st' : State)
+                                 (es : List Expr) (xs : List RValue)
+                                 (h : EvalList st es (.ok xs st'))
+: st ≤ st' := by
+  induction es generalizing st st' xs with
+  | nil =>
+    cases h with
+    | nil => simp
+  | cons e es ih =>
+    cases h with
+    | cons _ st₂ _ _ _ x xs h₁ h₂ =>
+      apply Eval_state_monotonic at h₁
+      apply ih at h₂
+      grw [h₁, h₂]

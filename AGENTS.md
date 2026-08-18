@@ -18,9 +18,9 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Ast.lean` — Umbrella module
 - `Lama/Semantics/Eval.lean` — All semantic definitions: `Box`, `Error`, `RValue`, `EnvValue`, `SimpleEnv`, `BoxValue`, `Memory`, `Environment`, `EnvLookup`, `State`, `LValue`, `Value`, `Result`; the evaluation functions (`evalVar`, `checkRef`, `evalBinop`, `evalElem`, `evalElemRef`, `prepareCall`, `commitCall`, `evalAssignR`, `evalAssign`, `evalPattern`, `evalPatternList`, `chooseCaseR`, `chooseCase`, `prepareDefList`); and the `Eval`/`EvalList` inductive relations. Also defines the helper functions `Option.toExcept`, `List.set?`, `ByteArray.set?`
 - `Lama/Semantics/Unique.lean` — `Eval_unique` theorem proving determinism of evaluation (complete, ~1077 lines, no sorries)
-- `Lama/Semantics/Monotonic.lean` — `SameShape` relations on `EnvValue`/`BoxValue`/`SimpleEnv`/`Environment` (reflexive, symmetric, transitive); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder Memory`/`Preorder State` instances; key theorems: `Environment.assign_memory_monotonic`, `Environment.assign_same_shape`, `BoxValue.assign_same_shape`, `evalVar_state_monotonic`, `evalAssign_state_monotonic`, `Eval_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`) (~624 lines, no sorries)
-- `Lama/Semantics.lean` — Umbrella module, imports `Lama.Semantics.Eval`, `Lama.Semantics.Unique`, `Lama.Semantics.Monotonic`
-- `Lama.lean` — Root, imports `Lama.Ast` and `Lama.Semantics`
+- `Lama/Semantics/Monotonic.lean` — `SameShape` relations on `EnvValue`/`BoxValue`/`SimpleEnv`/`Environment` (reflexive, symmetric, transitive); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder Memory`/`Preorder State` instances; capstones `Eval_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`) and `EvalList_state_monotonic`; key building blocks `Environment.assign_memory_monotonic`, `Environment.assign_same_shape`, `BoxValue.assign_same_shape` (~664 lines, no sorries)
+- `Lama/Semantics/WellFormed.lean` — Runtime well-formedness invariant. Per-type WF predicates for every semantic type (`Box` … `Result`); `Memory.WF` is a structure with two fields: `bound` (prefix-defined — cell `b` is undefined iff `¬ b.WF mem`) and `mem` (every cell's content is WF). `State.WF` is a structure with `env`/`mem` fields. Transport theorems move WF along the `Memory.LE`/`State.LE` preorder. Preservation theorems for every step-level operation; capstone `Eval_result_wf` (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`, structural induction over `Eval` with a custom motive for `EvalList`) (~1203 lines, no sorries)
+- `Lama/Semantics/Sound.lean` — Soundness proof (work in progress, **37 sorries**). Establishes that `.metatheory` errors never arise during well-formed evaluation. Key lemmas: `Environment.lookup_metatheory_error` (`env.lookup x mem = .error .metatheory → ¬ env.WF mem`), `Environment.close_none` (`env.close mem = .none ↔ ¬ env.WF mem`), `evalVar_metatheory_error`, `checkRef_some_metatheory`, `evalElem_metatheory_error` (partial — 3 sorries), capstone `Eval_no_metatheory_error` (`st.WF → Eval st e r → r ≠ .err .metatheory`, structural induction over `Eval` — most non-error cases done, error-propagation cases remaining). Imports `WellFormed`; not yet imported by `Lama/Semantics.lean` umbrella (~183 lines)
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
 - Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch)
 
@@ -191,6 +191,54 @@ Where the Lean model diverges from compiled Lama semantics, the direction of sou
 - **Closure slot write-back timing**: Model does per-slot immediate mutation (matches compiled). Interpreter does coarse `closure.(0) <- st''` write-back after call. Observable difference in re-entrant calls: model = compiled ≠ interpreter.
 - **GC / allocation-order sensitivity**: Model memory is never reused (`bound` grows monotonically). Real Lama's GC may move objects. Combined with address-observing `==`, box-identity results are meaningful only up to allocation-order agreement.
 - **`callOk` evaluation order assumption**: Model evaluates callee → args → body, matching "closure pushed below its arguments for `CALLC`". If the SM emits argument code before callee code, state threading diverges when both have state-dependent side effects like allocation. Not yet confirmed against `SM.ml`.
+
+## Well-Formedness Invariant
+
+The `WellFormed.lean` module formalizes a **runtime well-formedness invariant** that characterizes states where the heap and environment are structurally consistent. This invariant is the key prerequisite for proving that `.metatheory` errors never occur during well-formed evaluation.
+
+### Memory well-formedness (`Memory.WF`)
+
+`Memory.WF` is a `structure` with two propositional fields:
+
+- `bound` — the memory is **prefix-defined**: cell `b` is undefined (`mem.mem b = .undefined`) if and only if `¬ b.WF mem` (equivalently, `mem.bound ≤ b.cell`). All and only the cells below the high-water mark are defined. This rules out "holes" inside the allocated region.
+- `mem` — every defined cell's content is itself well-formed (`(mem.mem b).WF mem`).
+
+A companion `Memory.WF_iff` lemma converts between the structure form and a conjunction for rewriting. The prefix-defined invariant is the machine-level property that makes monotonicity and shape arguments sound.
+
+### Environment well-formedness (`Environment.WF`)
+
+`Environment.WF mem env` is a structural predicate:
+
+- `.empty` → trivially well-formed.
+- `.closure box` → the box must actually hold a closure value in memory (`∃ env params body, mem.mem box = .closure env params body`). This closes the loop between environment structure and heap contents, ruling out the "malformed closure box" `.metatheory` errors from `Eval.lean`.
+- `.scope _ env` → the tail environment must be well-formed.
+
+`Environment.WF` is marked `[reducible, simp]` so `simp` can unfold it automatically.
+
+### State well-formedness (`State.WF`)
+
+`State.WF` is a `structure` with two propositional fields: `env : st.env.WF st.mem` and `mem : st.mem.WF`. The structure form enables projection-based access (`h.env`, `h.mem`) in proofs. A companion `State.WF_iff` lemma converts between the structure form and a conjunction for rewriting.
+
+### Key theorems
+
+| Theorem | Statement |
+|---|---|
+| `Environment.WF_transport` | WF transports along the `Memory.LE` preorder: enlarging memory to a WF superset preserves environment WF. This is the bridge between WF and monotonicity. |
+| `Result.popEnv_wf` | Popping the environment frame after `case`/`scope` body evaluation preserves WF of the result (filters out escaping local l-values — see Model Adequacy Limits). |
+| `evalAssign_wf` | Assignment preserves WF — the most involved preservation proof, handling variable slot vs box slot update paths. Also proves the RHS value equals the assigned r-value. |
+| `Eval_result_wf` | **Capstone:** a well-formed state evaluates to a well-formed result (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`). Structural induction over `Eval` with a custom motive for `EvalList`. Proves both the result value and the resulting state are WF on `.ok` outcomes. |
+
+All remaining preservation theorems follow the same pattern: a step-level operation preserves WF on `.ok` outcomes.
+
+### Design notes
+
+- **Per-type WF predicates**: every semantic type (`Box`, `RValue`, `EnvValue`, `SimpleEnv`, `BoxValue`, `EnvLookup`, `Environment`, `LValue`, `Value`, `Result`) has a dedicated `.WF` predicate over the relevant state/memory. `@[simp]` lemmas unfold each variant (e.g. `BoxValue.WF_arr`, `BoxValue.WF_closure`, `LValue.WF_var`).
+- **Transport theorems**: every per-type WF predicate has a `_transport` theorem moving it along the `Memory.LE`/`State.LE` preorder (enlarging memory to a WF superset preserves WF). `LValue.WF_transport` is the most involved — it threads `Environment.SameShape` from `State.LE` through the lookup chain to show the looked-up r-value is preserved.
+- **Naming convention**: `X_state_wf` for step-level preservation theorems returning state WF; `_env_wf` for theorems returning `SimpleEnv.WF`; `_wf` suffix on all WF statements.
+- **Proof style**: `fun_induction assign` for the recursive `Environment.assign` proofs (same pattern as `Eval.lean`/`Monotonic.lean`). `grw` (guided rewrite) and `simp` over WF equalities are the standard memory-cell arguments. Error cases require no work (`Result.ok` is inconsistent with error hypotheses, so `simp at hr` dispatches them).
+- **`caseOk`/`scope` proof pattern**: extract an existential from `Result.popEnv`, then reason about `Environment.pop` — an "unfold the pop, inspect the split" pattern.
+- **Imported by `Lama/Semantics.lean`**: `WellFormed` is layered on top of `Monotonic` and imported into the umbrella module alongside `Eval` and `Unique`.
+- **Tight coupling to `Eval` rule shapes**: `Eval_result_wf` pattern-matches on every constructor of `Eval`/`EvalList`; any new rule (e.g., a future `funCall`/`closureCall` split or I/O additions) requires extending this induction.
 
 ## Lean Technical Notes
 

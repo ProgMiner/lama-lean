@@ -18,8 +18,8 @@ theorem Option.toExcept_some_iff {α : Type u} {ε : Type v}
 
 @[simp]
 theorem Option.toExcept_none_iff {α : Type u} {ε : Type v}
-                                 (e : ε) (x : Option α)
-: x.toExcept e = .error e <-> x = .none where
+                                 (e e' : ε) (x : Option α)
+: x.toExcept e = .error e' <-> x = .none ∧ e = e' where
   mp := by cases x <;> simp
   mpr := by cases x <;> simp
 
@@ -63,20 +63,54 @@ def RValue.toInt? : RValue -> Option Int
 | .int n => .some n
 | .box _ => .none
 
+@[simp]
+theorem RValue.toInt?_some_iff (x : RValue) (y : Int)
+: x.toInt? = .some y <-> x = .int y := by
+  cases x <;> simp
+
 @[reducible]
 def RValue.toNat? (x : RValue) : Except Error ℕ := do
   let x <- x.toInt?.toExcept .type
   x.toNat?.toExcept .runtime
+
+@[simp]
+theorem RValue.toNat?_ok_iff (x : RValue) (y : ℕ)
+: x.toNat? = .ok y <-> x = .int y := by
+  unfold toNat?
+  simp [Bind.bind, Except.bind]
+  split <;> rename_i h <;> simp at h
+  . cases x <;> simp at h
+    simp
+  subst h
+  rename_i x
+  simp
+  unfold Int.toNat?
+  split <;> simp
 
 @[reducible]
 def RValue.toBool? (x : RValue) : Option Bool := do
   let x <- x.toInt?
   return x ≠ 0
 
+@[simp]
+theorem RValue.toBool?_some_iff (x : RValue) (y : Bool)
+: x.toBool? = .some y <-> ∃ y', x = .int y' ∧ y = (y' ≠ 0 : Bool) := by
+  simp
+  suffices ∀ y', decide (y' = 0) = !y <-> y = !decide (y' = 0) by
+    constructor <;> intro ⟨ y', h ⟩ <;> use y' <;> simp [*]
+  intro y'
+  by_cases h : y' = 0
+  all_goals simp [h]
+
 @[reducible]
 def RValue.toBox? : RValue -> Option Box
 | .int _ => .none
 | .box b => .some b
+
+@[simp]
+theorem RValue.toBox?_some_iff (x : RValue) (y : Box)
+: x.toBox? = .some y <-> x = .box y := by
+  cases x <;> simp
 
 -- Value in environment
 inductive EnvValue where
@@ -172,7 +206,7 @@ instance : CoeFun Environment (fun _ => Ident -> Memory -> Except Error EnvLooku
 @[reducible, simp]
 def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
 : Environment -> Except Error (Environment × Memory)
-| empty => .error .name
+| empty => .error .metatheory
 | closure b => do
   match mem b with
   | .closure xs params body =>
@@ -181,13 +215,13 @@ def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
       let xs := xs.insert x $ .var y
       let mem := mem.assign b $ .closure xs params body
       .ok (closure b, mem)
-    | _ => .error .name
+    | _ => .error .metatheory
   | _ => .error .metatheory
 | scope xs env =>
   match xs.lookup x with
   | .some (.var _) =>
     .ok (env.scope $ xs.insert x (.var y), mem)
-  | .some (.fn _ _) => .error .name
+  | .some (.fn _ _) => .error .metatheory
   | .none => do
     let (env, mem) <- env.assign x y mem
     return (env.scope xs, mem)
@@ -245,6 +279,11 @@ def Value.toRValue? : Value -> Option RValue
 | .rvalue x => .some x
 | .lvalue _ => .none
 
+@[simp]
+theorem Value.toRValue?_some_iff (x : Value) (y : RValue)
+: x.toRValue? = .some y <-> x = .rvalue y := by
+  cases x <;> simp
+
 @[reducible]
 def Value.toInt? (x : Value) : Except Error Int := do
   let x <- x.toRValue?.toExcept .lvalue
@@ -270,6 +309,11 @@ def Value.toLValue? : Value -> Option LValue
 | .lvalue x => .some x
 | .rvalue _ => .none
 
+@[simp]
+theorem Value.toLValue?_some_iff (x : Value) (y : LValue)
+: x.toLValue? = .some y <-> x = .lvalue y := by
+  cases x <;> simp
+
 inductive Result (V : Type) where
 | ok (x : V) (st : State)
 | err (err : Error)
@@ -279,7 +323,7 @@ deriving Inhabited
 def Result.popEnv : Result Value -> Result Value
 | ok x st =>
   let ok : Bool := match st.env, x with
-  | .scope xs _, .lvalue (.var x) => x ∈ xs
+  | .scope xs _, .lvalue (.var x) => x ∉ xs
   | _, _ => false
   if ok then match st.popEnv with
   | .none => .err .metatheory
@@ -316,7 +360,7 @@ def checkRef (st : State) (x : Ident) : Option Error :=
   | .error e => .some e
 
 @[reducible]
-def evalBinop (x y : Value) :  Binop -> Except Error RValue
+def evalBinop (x y : Value) : Binop -> Except Error RValue
 | .or => do
   let x <- x.toBool?
   let y <- y.toBool?
@@ -371,7 +415,8 @@ def evalBinop (x y : Value) :  Binop -> Except Error RValue
   return .int $ x.tmod y
 
 @[reducible]
-def evalElem (mem : Memory) (x y : Value) : Except Error RValue := do
+def evalElem (mem : Memory) (x y : Value)
+: Except Error RValue := do
   let x <- x.toBox?
   let y <- y.toNat?
   match mem x with
@@ -384,27 +429,12 @@ def evalElem (mem : Memory) (x y : Value) : Except Error RValue := do
   | .closure _ _ _ => .error .type
 
 @[reducible]
-def evalElemRefR (mem : Memory) (x y : RValue) : Except Error LValue := do
-  let x <- x.toBox?.toExcept .type
-  let y <- y.toNat?
-  match mem x with
-  | .undefined => .error .metatheory
-  | .str xs =>
-    if y < xs.size then return .elem x y
-    else .error .runtime
-  | .arr xs =>
-    if y < xs.length then return .elem x y
-    else .error .runtime
-  | .sexp _ xs =>
-    if y < xs.length then return .elem x y
-    else .error .runtime
-  | .closure _ _ _ => .error .type
-
-@[reducible]
-def evalElemRef (mem : Memory) (x y : Value) : Except Error LValue := do
+def evalElemRef (x y : Value) : Except Error LValue := do
   let x <- x.toRValue?.toExcept .lvalue
   let y <- y.toRValue?.toExcept .lvalue
-  evalElemRefR mem x y
+  let x <- x.toBox?.toExcept .type
+  let y <- y.toNat?
+  return .elem x y
 
 @[reducible]
 def prepareCall (mem : Memory) (x : Value) (xs : List RValue)
@@ -624,12 +654,12 @@ inductive Eval : State -> Expr -> Result Value -> Prop where
 | elemRefOk st₁ st₂ st₃ x₁ x₂ y₁ y₂ z
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElemRef st₃.mem y₁ y₂ = .ok z
+ -> evalElemRef y₁ y₂ = .ok z
  -> Eval st₁ (.elemRef x₁ x₂) (.ok (.lvalue z) st₃)
 | elemRefErr st₁ st₂ st₃ x₁ x₂ y₁ y₂ e
   : Eval st₁ x₁ (.ok y₁ st₂)
  -> Eval st₂ x₂ (.ok y₂ st₃)
- -> evalElemRef st₃.mem y₁ y₂ = .error e
+ -> evalElemRef y₁ y₂ = .error e
  -> Eval st₁ (.elemRef x₁ x₂) (.err e)
 | elemRefErrL st x₁ x₂ e
   : Eval st x₁ (.err e)
