@@ -3,11 +3,25 @@ import Mathlib
 import Lama.Ast
 
 
-@[reducible, simp]
+@[reducible]
 def Option.toExcept {α : Type u} {ε : Type v} (e : ε)
 : Option α -> Except ε α
 | .none => .error e
 | .some x => .ok x
+
+@[simp]
+theorem Option.toExcept_some_iff {α : Type u} {ε : Type v}
+                                 (e : ε) (x : Option α) (y : α)
+: x.toExcept e = .ok y <-> x = .some y where
+  mp := by cases x <;> simp
+  mpr := by cases x <;> simp
+
+@[simp]
+theorem Option.toExcept_none_iff {α : Type u} {ε : Type v}
+                                 (e : ε) (x : Option α)
+: x.toExcept e = .error e <-> x = .none where
+  mp := by cases x <;> simp
+  mpr := by cases x <;> simp
 
 @[reducible]
 def List.set? {α : Type u} (i : ℕ) (x : α) (xs : List α) : Option (List α) :=
@@ -44,7 +58,7 @@ inductive RValue where
 | box (b : Box)
 deriving Repr, DecidableEq, Inhabited, Hashable
 
-@[reducible, simp]
+@[reducible]
 def RValue.toInt? : RValue -> Option Int
 | .int n => .some n
 | .box _ => .none
@@ -59,7 +73,7 @@ def RValue.toBool? (x : RValue) : Option Bool := do
   let x <- x.toInt?
   return x ≠ 0
 
-@[reducible, simp]
+@[reducible]
 def RValue.toBox? : RValue -> Option Box
 | .int _ => .none
 | .box b => .some b
@@ -75,14 +89,16 @@ abbrev SimpleEnv : Type :=
 
 -- Value in memory
 inductive BoxValue where
+| undefined
 | str (xs : ByteArray)
 | arr (xs : List RValue)
 | sexp (t : Tag) (xs : List RValue)
 | closure (env : SimpleEnv) (params : List Ident) (body : Expr)
 
-@[reducible, simp]
+@[reducible]
 def BoxValue.assign (i : ℕ) (x : RValue)
 : BoxValue -> Except Error BoxValue
+| undefined => .error .metatheory
 | str xs => do
   let x <- x.toNat?
   let xs <- (xs.set? i x.toUInt8).toExcept .runtime
@@ -129,7 +145,7 @@ inductive EnvLookup where
 | var (x : RValue)
 | fn (env : Environment) (params : List Ident) (body : Expr)
 
-@[reducible, simp]
+@[reducible]
 def EnvValue.toLookup (env : Environment) : EnvValue -> EnvLookup
 | var x => .var x
 | fn params body => .fn env params body
@@ -188,7 +204,7 @@ def Environment.close (mem : Memory)
   let env <- env.close mem
   return xs ∪ env
 
-@[reducible, simp]
+@[reducible]
 def Environment.pop
 : Environment -> Option Environment
 | empty => .none
@@ -224,7 +240,7 @@ inductive Value where
 | lvalue (x : LValue)
 deriving Repr, DecidableEq, Inhabited, Hashable
 
-@[reducible, simp]
+@[reducible]
 def Value.toRValue? : Value -> Option RValue
 | .rvalue x => .some x
 | .lvalue _ => .none
@@ -249,7 +265,7 @@ def Value.toBox? (x : Value) : Except Error Box := do
   let x <- x.toRValue?.toExcept .lvalue
   x.toBox?.toExcept .type
 
-@[reducible, simp]
+@[reducible]
 def Value.toLValue? : Value -> Option LValue
 | .lvalue x => .some x
 | .rvalue _ => .none
@@ -259,32 +275,25 @@ inductive Result (V : Type) where
 | err (err : Error)
 deriving Inhabited
 
-@[reducible, simp]
+@[reducible]
 def Result.popEnv : Result Value -> Result Value
-| ok (.lvalue (.var x)) st =>
-  match st.env with
-  | .scope xs _ =>
-    if x ∈ xs then .err .lvalue
-    else match st.popEnv with
-    | .none => .err .metatheory
-    | .some st => .ok (.lvalue $ .var x) st
-  | _ =>
-    match st.popEnv with
-    | .none => .err .metatheory
-    | .some st => .ok (.lvalue $ .var x) st
 | ok x st =>
-  match st.popEnv with
+  let ok : Bool := match st.env, x with
+  | .scope xs _, .lvalue (.var x) => x ∈ xs
+  | _, _ => false
+  if ok then match st.popEnv with
   | .none => .err .metatheory
-  | .some st => ok x st
+  | .some st => .ok x st
+  else .err .lvalue
 | res => res
 
-@[reducible, simp]
+@[reducible]
 def Result.toExcept {V : Type}
 : Result V -> Except Error (V × State)
 | ok x st => .ok (x, st)
 | err e => .error e
 
-@[reducible, simp]
+@[reducible]
 def Result.ofExcept {V : Type}
 : Except Error (V × State) -> Result V
 | .ok (x, st) => .ok x st
@@ -306,7 +315,7 @@ def checkRef (st : State) (x : Ident) : Option Error :=
   | .ok _ => .some .name
   | .error e => .some e
 
-@[reducible, simp]
+@[reducible]
 def evalBinop (x y : Value) :  Binop -> Except Error RValue
 | .or => do
   let x <- x.toBool?
@@ -366,6 +375,7 @@ def evalElem (mem : Memory) (x y : Value) : Except Error RValue := do
   let x <- x.toBox?
   let y <- y.toNat?
   match mem x with
+  | .undefined => .error .metatheory
   | .str xs =>
     let z <- xs[y]?.toExcept .runtime
     return .int z.toNat
@@ -378,6 +388,7 @@ def evalElemRefR (mem : Memory) (x y : RValue) : Except Error LValue := do
   let x <- x.toBox?.toExcept .type
   let y <- y.toNat?
   match mem x with
+  | .undefined => .error .metatheory
   | .str xs =>
     if y < xs.size then return .elem x y
     else .error .runtime

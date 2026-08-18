@@ -16,7 +16,10 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Ast/Pattern.lean` — `Pattern` (12 constructors: wildcard, const, string, array, sexp, named, 6 type-tags)
 - `Lama/Ast/Expr.lean` — Mutual `Expr`/`Scope`/`Definition` + `abbrev Program := Scope`
 - `Lama/Ast.lean` — Umbrella module
-- `Lama/Semantics.lean` — Dynamic semantics: `Memory`, `Environment`, `State`, `Value`/`RValue`/`LValue`, `Eval`/`EvalList` relations, `Error` classification
+- `Lama/Semantics/Eval.lean` — All semantic definitions: `Box`, `Error`, `RValue`, `EnvValue`, `SimpleEnv`, `BoxValue`, `Memory`, `Environment`, `EnvLookup`, `State`, `LValue`, `Value`, `Result`; the evaluation functions (`evalVar`, `checkRef`, `evalBinop`, `evalElem`, `evalElemRef`, `prepareCall`, `commitCall`, `evalAssignR`, `evalAssign`, `evalPattern`, `evalPatternList`, `chooseCaseR`, `chooseCase`, `prepareDefList`); and the `Eval`/`EvalList` inductive relations. Also defines the helper functions `Option.toExcept`, `List.set?`, `ByteArray.set?`
+- `Lama/Semantics/Unique.lean` — `Eval_unique` theorem proving determinism of evaluation (complete, ~1077 lines, no sorries)
+- `Lama/Semantics/Monotonic.lean` — `SameShape` relations on `EnvValue`/`BoxValue`/`SimpleEnv`/`Environment` (reflexive, symmetric, transitive); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder Memory`/`Preorder State` instances; key theorems: `Environment.assign_memory_monotonic`, `Environment.assign_same_shape`, `BoxValue.assign_same_shape`, `evalVar_state_monotonic`, `evalAssign_state_monotonic`, `Eval_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`) (~624 lines, no sorries)
+- `Lama/Semantics.lean` — Umbrella module, imports `Lama.Semantics.Eval`, `Lama.Semantics.Unique`, `Lama.Semantics.Monotonic`
 - `Lama.lean` — Root, imports `Lama.Ast` and `Lama.Semantics`
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
 - Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch)
