@@ -17,10 +17,10 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Ast/Expr.lean` — Mutual `Expr`/`Scope`/`Definition` + `abbrev Program := Scope`
 - `Lama/Ast.lean` — Umbrella module
 - `Lama/Semantics/Eval.lean` — All semantic definitions: `Box`, `Error`, `RValue`, `EnvValue`, `SimpleEnv`, `BoxValue`, `Memory`, `Environment`, `EnvLookup`, `State`, `LValue`, `Value`, `Result`; the evaluation functions (`evalVar`, `checkRef`, `evalBinop`, `evalElem`, `evalElemRef`, `prepareCall`, `commitCall`, `evalAssignR`, `evalAssign`, `evalPattern`, `evalPatternList`, `chooseCaseR`, `chooseCase`, `prepareDefList`); and the `Eval`/`EvalList` inductive relations. Also defines the helper functions `Option.toExcept`, `List.set?`, `ByteArray.set?`
-- `Lama/Semantics/Unique.lean` — `Eval_unique` theorem proving determinism of evaluation (complete, ~1077 lines, no sorries)
-- `Lama/Semantics/Monotonic.lean` — `SameShape` relations on `EnvValue`/`BoxValue`/`SimpleEnv`/`Environment` (reflexive, symmetric, transitive); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder Memory`/`Preorder State` instances; capstones `Eval_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`) and `EvalList_state_monotonic`; key building blocks `Environment.assign_memory_monotonic`, `Environment.assign_same_shape`, `BoxValue.assign_same_shape` (~664 lines, no sorries)
-- `Lama/Semantics/WellFormed.lean` — Runtime well-formedness invariant. Per-type WF predicates for every semantic type (`Box` … `Result`); `Memory.WF` is a structure with two fields: `bound` (prefix-defined — cell `b` is undefined iff `¬ b.WF mem`) and `mem` (every cell's content is WF). `State.WF` is a structure with `env`/`mem` fields. Transport theorems move WF along the `Memory.LE`/`State.LE` preorder. Preservation theorems for every step-level operation; capstone `Eval_result_wf` (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`, structural induction over `Eval` with a custom motive for `EvalList`) (~1203 lines, no sorries)
-- `Lama/Semantics/Sound.lean` — Soundness proof (work in progress, **37 sorries**). Establishes that `.metatheory` errors never arise during well-formed evaluation. Key lemmas: `Environment.lookup_metatheory_error` (`env.lookup x mem = .error .metatheory → ¬ env.WF mem`), `Environment.close_none` (`env.close mem = .none ↔ ¬ env.WF mem`), `evalVar_metatheory_error`, `checkRef_some_metatheory`, `evalElem_metatheory_error` (partial — 3 sorries), capstone `Eval_no_metatheory_error` (`st.WF → Eval st e r → r ≠ .err .metatheory`, structural induction over `Eval` — most non-error cases done, error-propagation cases remaining). Imports `WellFormed`; not yet imported by `Lama/Semantics.lean` umbrella (~183 lines)
+- `Lama/Semantics/Unique.lean` — `Eval_unique` theorem proving determinism of evaluation (~1077 lines)
+- `Lama/Semantics/Monotonic.lean` — `SameShape` relations on `EnvValue`/`BoxValue`/`SimpleEnv`/`Environment` (reflexive, symmetric, transitive); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder Memory`/`Preorder State` instances; capstones `Eval_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`) and `EvalList_state_monotonic`; key building blocks `Environment.assign_memory_monotonic`, `Environment.assign_same_shape`, `BoxValue.assign_same_shape` (~664 lines)
+- `Lama/Semantics/WellFormed.lean` — Runtime well-formedness invariant. Per-type WF predicates for every semantic type (`Box` … `Result`); `Memory.WF` is a structure with two fields: `bound` (prefix-defined — cell `b` is undefined iff `¬ b.WF mem`) and `mem` (every cell's content is WF). `State.WF` is a structure with `env`/`mem` fields. Transport theorems move WF along the `Memory.LE`/`State.LE` preorder. Preservation theorems for every step-level operation; capstones `Eval_result_wf` (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`, structural induction over `Eval`) and `EvalList_result_wf` (`EvalList st es r → st.WF → r.WF (fun xs st => ∀ x ∈ xs, x.WF st.mem)`) (~1233 lines)
+- `Lama/Semantics/Sound.lean` — Soundness proof. Establishes that `.metatheory` errors never arise during well-formed evaluation. Key lemmas: `Environment.lookup_metatheory_error` (`env.lookup x mem = .error .metatheory → ¬ env.WF mem`), `Environment.close_none` (`env.close mem = .none ↔ ¬ env.WF mem`), `evalVar_metatheory_error`, `checkRef_some_metatheory`, `evalElem_metatheory_error`, `evalAssign_metatheory_error`, capstone `Eval_no_metatheory_error` (`st.WF → Eval st e r → r ≠ .err .metatheory`, structural induction over `Eval` with a custom motive for `EvalList`). Imports `WellFormed`; imported by `Lama/Semantics.lean` umbrella (~622 lines)
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
 - Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch)
 
@@ -90,7 +90,7 @@ All definitions in a scope are pre-processed before the body runs. `fun` definit
 
 ### I/O and effects omitted
 
-The Lean semantics **intentionally omits** I/O and side-effect tracking. The AST has no I/O constructors, and the `Eval` relation carries no effect trace. In real Lama, `read` consumes an integer from the input stream and `write e` appends `e` to the output (compiled x86-64 returns `0`; spec `Weak`-forms it as `write(e); ⊥` with ⊥ ≡ `int 0`; the interpreter pushes `Value.Empty`). Modeling I/O would require threading an input/output state through `Eval`; this is deferred to avoid the complexity until needed for adequacy proofs over I/O behavior.
+The Lean semantics **intentionally omits** I/O and side-effect tracking. The AST has no I/O constructors, and the `Eval` relation carries no effect trace. In real Lama, `read` consumes an integer from the input stream and `write e` appends `e` to the output (compiled x86-64 returns `0`; spec `Weak`-forms it as `write(e); ⊥` with ⊥ ≡ `int 0`; the interpreter pushes `Value.Empty`).
 
 ### Pattern variables mutability
 
@@ -111,20 +111,12 @@ Interpreter binds pattern variables as `Unmut` (immutable). SM/x86 compiler bind
 
 ## Intentional Lean AST Design Divergences from the OCaml Reference
 
-### Unified `call` (planned split into `funCall`/`closureCall`)
-
-The OCaml AST has a single `Call of t * t list` where the callee is any expression. The current Lean AST also uses a single `call (x : Expr) (xs : List Expr)`. The planned design splits into:
-- `funCall (fn : Ident) (args : List Expr)` — call to a named function
-- `closureCall (fn : Expr) (args : List Expr)` — call to a closure / arbitrary expression
-
-`Call(Var "f", args)` and `Call(Ref "f", args)` in the OCaml AST both map to `funCall "f" args` (both go through `FunRef` resolution). Arbitrary callee expressions map to `closureCall`. Named calls resolve via `FunRef` (pre-bound, self-recursive, lazy closure creation); closure calls evaluate the callee to a `Closure` value and enter it directly. Splitting at the type level makes this semantic distinction explicit.
-
 ### `Intrinsic` / `Control` omitted
 
 The OCaml AST has `Intrinsic` and `Control` — higher-order functions from config to config, used for scheduling-based evaluation. The Lean AST omits both entirely. `Intrinsic`/`Control` are evaluation-scheduling mechanisms, not semantic constructs. Other intrinsics (`.elem`, `length`, `.array`, `string`) are covered by dedicated AST nodes (`elem`, `elemRef`, `arr`) or are irrelevant to core dynamic semantics. The I/O intrinsics (`read`, `write`) are also omitted (see "I/O and effects omitted" above).
 ### Closed `Binop` enum instead of string-based operators
 
-The OCaml AST has `Binop of string * t * t`. The Lean AST uses a closed `Binop` inductive with 12 constructors. User-defined infix operators are a syntactic extensibility feature omitted from the core. If needed, `Binop` can be extended with `userDef (name : Ident)`.
+The OCaml AST has `Binop of string * t * t`. The Lean AST uses a closed `Binop` inductive with 12 constructors. User-defined infix operators are a syntactic extensibility feature omitted from the core.
 
 ### No globals
 
@@ -136,7 +128,7 @@ The OCaml `decl` includes a `qualifier` (`Local | Public | Extern | PublicExtern
 
 ### No `VarKind` (mutability annotation) on definitions
 
-The OCaml implementation tracks `Unmut | Mut | FVal` per definition. The Lean `Definition` does not carry this: `Definition.fn` = `FVal`, `Definition.var` = `Mut`. The `Unmut`/`val` case (immutable non-recursive binding) is not yet modeled.
+The OCaml implementation tracks `Unmut | Mut | FVal` per definition. The Lean `Definition` does not carry this: `Definition.fn` = `FVal`, `Definition.var` = `Mut`. The `Unmut`/`val` case (immutable non-recursive binding) is absent from the model.
 
 ### `Definition.var` uses `Expr` (sentinel `.skip`) instead of `Option Expr`
 
@@ -176,7 +168,7 @@ Error rules in the `Eval` inductive carry the error kind as a parameter (`varErr
 
 ### Notes on specific classifications
 
-1. **`chooseCase` no-match → `.runtime`** (line 520): The code comment `-- or .type ???` marks an open question retained for future revisit if a static type system can recognize pattern-match exhaustiveness. `.runtime` is the correct classification under the current type-erased model — a non-exhaustive `case` (no pattern matches the scrutinee at runtime) is a runtime error, not a type error: the scrutinee's value kind is irrelevant; it simply doesn't match any pattern.
+1. **`chooseCase` no-match → `.runtime`** (line 520): The code comment `-- or .type ???` marks an open question. `.runtime` is the correct classification under the current type-erased model — a non-exhaustive `case` (no pattern matches the scrutinee at runtime) is a runtime error, not a type error: the scrutinee's value kind is irrelevant; it simply doesn't match any pattern.
 
 2. **`prepareCall` too-few-arguments → `.type`** (line 406): Calling a closure with fewer arguments than parameters is classified as a structural type mismatch. This is defensible (arity as a structural property), but `.runtime` would also be reasonable (arity mismatch as a runtime contract violation). The current `.type` choice is a judgment call.
 
@@ -226,7 +218,8 @@ A companion `Memory.WF_iff` lemma converts between the structure form and a conj
 | `Environment.WF_transport` | WF transports along the `Memory.LE` preorder: enlarging memory to a WF superset preserves environment WF. This is the bridge between WF and monotonicity. |
 | `Result.popEnv_wf` | Popping the environment frame after `case`/`scope` body evaluation preserves WF of the result (filters out escaping local l-values — see Model Adequacy Limits). |
 | `evalAssign_wf` | Assignment preserves WF — the most involved preservation proof, handling variable slot vs box slot update paths. Also proves the RHS value equals the assigned r-value. |
-| `Eval_result_wf` | **Capstone:** a well-formed state evaluates to a well-formed result (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`). Structural induction over `Eval` with a custom motive for `EvalList`. Proves both the result value and the resulting state are WF on `.ok` outcomes. |
+| `Eval_result_wf` | **Capstone:** a well-formed state evaluates to a well-formed result (`Eval st e r → st.WF → r.WF (fun x st => x.WF st)`). Structural induction over `Eval`. Proves both the result value and the resulting state are WF on `.ok` outcomes. |
+| `EvalList_result_wf` | **Capstone:** the list counterpart of `Eval_result_wf` (`EvalList st es r → st.WF → r.WF (fun xs st => ∀ x ∈ xs, x.WF st.mem)`). Uses `Eval_result_wf` on the head element plus `EvalList_state_monotonic` to transport the tail's WF along the state growth. |
 
 All remaining preservation theorems follow the same pattern: a step-level operation preserves WF on `.ok` outcomes.
 
@@ -237,11 +230,11 @@ All remaining preservation theorems follow the same pattern: a step-level operat
 - **Naming convention**: `X_state_wf` for step-level preservation theorems returning state WF; `_env_wf` for theorems returning `SimpleEnv.WF`; `_wf` suffix on all WF statements.
 - **Proof style**: `fun_induction assign` for the recursive `Environment.assign` proofs (same pattern as `Eval.lean`/`Monotonic.lean`). `grw` (guided rewrite) and `simp` over WF equalities are the standard memory-cell arguments. Error cases require no work (`Result.ok` is inconsistent with error hypotheses, so `simp at hr` dispatches them).
 - **`caseOk`/`scope` proof pattern**: extract an existential from `Result.popEnv`, then reason about `Environment.pop` — an "unfold the pop, inspect the split" pattern.
-- **Imported by `Lama/Semantics.lean`**: `WellFormed` is layered on top of `Monotonic` and imported into the umbrella module alongside `Eval` and `Unique`.
-- **Tight coupling to `Eval` rule shapes**: `Eval_result_wf` pattern-matches on every constructor of `Eval`/`EvalList`; any new rule (e.g., a future `funCall`/`closureCall` split or I/O additions) requires extending this induction.
+- **Imported by `Lama/Semantics.lean`**: `WellFormed` is layered on top of `Monotonic` and imported into the umbrella module alongside `Eval`, `Unique`, and `Sound`.
+- **Tight coupling to `Eval` rule shapes**: `Eval_result_wf` and `Eval_no_metatheory_error` pattern-match on every constructor of `Eval`/`EvalList`; any new rule requires extending these inductions.
 
 ## Lean Technical Notes
 
 - `DecidableEq` cannot be auto-derived for `Pattern` or the mutual `Expr`/`Scope`/`Definition` block (Lean limitation with nested inductives through `List`/`Option`/`×`)
-- The auto-generated induction principle for the mutual block is weak for nested positions; future semantics code will need well-founded recursion or a custom eliminator
+- The auto-generated induction principle for the mutual block is weak for nested positions; semantics code over nested positions needs well-founded recursion or a custom eliminator
 - `Inhabited` derives fine on the mutual block (derives from `Expr.skip`)

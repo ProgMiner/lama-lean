@@ -804,29 +804,29 @@ theorem prepareCall_state_wf (mem : Memory) (x : Value) (xs : List RValue)
   apply List.of_mem_zip at hy'
   exact h₂ _ hy'.2
 
-mutual
-
 theorem evalPattern_env_wf (mem : Memory) (x : RValue)
                            (p : Pattern) (env : SimpleEnv)
                            (h₁ : evalPattern mem x p = .some env)
                            (h₂ : mem.WF) (h₃ : x.WF mem)
-: env.WF mem :=
-  match p with
-  | .wildcard => by
+: env.WF mem := by
+  induction p
+  using Pattern.rec (motive_2 := fun ps => (xs : List RValue) -> (env : SimpleEnv) -> evalPatternList mem xs ps = .some env -> (∀ x ∈ xs, x.WF mem) -> env.WF mem)
+  generalizing x env with
+  | wildcard =>
     simp at h₁
     subst env
     simp [SimpleEnv.WF]
-  | .const n => by
+  | const n =>
     simp at h₁
     obtain ⟨ rfl, rfl ⟩ := h₁
     simp [SimpleEnv.WF]
-  | .string s => by
+  | string s =>
     simp [Option.bind] at h₁
     split at h₁ <;> simp at h₁
     split at h₁ <;> simp at h₁
     obtain ⟨ rfl, rfl ⟩ := h₁
     simp [SimpleEnv.WF]
-  | .array ps => by
+  | array ps ih =>
     simp [Option.bind] at h₁
     split at h₁ <;> simp at h₁
     rename_i x h
@@ -837,9 +837,10 @@ theorem evalPattern_env_wf (mem : Memory) (x : RValue)
     split at h₁ <;> try simp at h₁
     rename_i xs h
     simp [h] at this
-    apply evalPatternList_env_wf at h₁
-    apply h₁ <;> assumption
-  | .sexp t ps => by
+    apply ih at h₁
+    apply h₁
+    assumption
+  | sexp t ps ih =>
     simp [Option.bind] at h₁
     split at h₁ <;> simp at h₁
     rename_i x h
@@ -851,17 +852,18 @@ theorem evalPattern_env_wf (mem : Memory) (x : RValue)
     rename_i xs h
     simp [h] at this
     obtain ⟨ rfl, h₁ ⟩ := h₁
-    apply evalPatternList_env_wf at h₁
-    apply h₁ <;> assumption
-  | .named x p => by
+    apply ih at h₁
+    apply h₁
+    assumption
+  | named xn p ih =>
     simp [Option.bind] at h₁
     split at h₁ <;> simp at h₁
     rename_i env h
     subst h₁
-    apply evalPattern_env_wf at h
-    specialize h h₂ h₃
+    apply ih at h
+    specialize h h₃
     intro x' y' hy'
-    by_cases hx' : x' = x
+    by_cases hx' : x' = xn
     . subst x'
       simp at hy'
       subst y'
@@ -869,73 +871,101 @@ theorem evalPattern_env_wf (mem : Memory) (x : RValue)
     rw [Finmap.lookup_insert_of_ne _ hx'] at hy'
     apply h
     assumption
-  | .boxTag => by
+  | boxTag =>
     simp at h₁
     cases x <;> simp at h₁
     subst env
     simp [SimpleEnv.WF]
-  | .valTag => by
+  | valTag =>
     simp at h₁
     cases x <;> simp at h₁
     subst env
     simp [SimpleEnv.WF]
-  | .strTag => by
-    simp at h₁
-    cases x <;> simp at h₁
-    split at h₁ <;> simp at h₁
-    subst env
-    simp [SimpleEnv.WF]
-  | .sexpTag => by
+  | strTag =>
     simp at h₁
     cases x <;> simp at h₁
     split at h₁ <;> simp at h₁
     subst env
     simp [SimpleEnv.WF]
-  | .arrayTag => by
+  | sexpTag =>
     simp at h₁
     cases x <;> simp at h₁
     split at h₁ <;> simp at h₁
     subst env
     simp [SimpleEnv.WF]
-  | .funTag => by
+  | arrayTag =>
     simp at h₁
     cases x <;> simp at h₁
     split at h₁ <;> simp at h₁
     subst env
     simp [SimpleEnv.WF]
+  | funTag =>
+    simp at h₁
+    cases x <;> simp at h₁
+    split at h₁ <;> simp at h₁
+    subst env
+    simp [SimpleEnv.WF]
+  | nil xs env h₁ h₂ =>
+    cases xs with
+    | nil =>
+      simp at h₁
+      subst env
+      simp [SimpleEnv.WF]
+    | cons => simp at h₁
+  | cons p ps ih₁ ih₂ xs env h₁ h₂ =>
+    cases xs with
+    | nil => simp at h₁
+    | cons x xs =>
+      simp [Option.bind] at h₁
+      split at h₁ <;> simp at h₁
+      rename_i env₁ henv₁
+      split at h₁ <;> simp at h₁
+      rename_i env₂ henv₂
+      subst env
+      apply ih₁ at henv₁
+      apply ih₂ at henv₂
+      simp [h₂] at henv₁ henv₂
+      apply SimpleEnv.union_wf
+      . apply henv₂
+        intro x hx
+        apply h₂
+        simp [hx]
+      . apply henv₁
 
 theorem evalPatternList_env_wf (mem : Memory) (xs : List RValue)
                                (ps : List Pattern) (env : SimpleEnv)
                                (h₁ : evalPatternList mem xs ps = .some env)
                                (h₂ : mem.WF) (h₃ : ∀ x ∈ xs, x.WF mem)
-: env.WF mem :=
-  match xs, ps with
-  | [], [] => by
-    simp at h₁
-    subst env
-    simp [SimpleEnv.WF]
-  | x::xs, p::ps => by
-    simp [Option.bind] at h₁
-    split at h₁ <;> simp at h₁
-    rename_i env₁ henv₁
-    split at h₁ <;> simp at h₁
-    rename_i env₂ henv₂
-    subst env
-    apply evalPattern_env_wf at henv₁
-    apply evalPatternList_env_wf at henv₂
-    simp [h₂] at henv₁ henv₂
-    apply SimpleEnv.union_wf
-    . apply henv₂
-      intro x hx
-      apply h₃
-      simp [hx]
-    . apply henv₁
-      apply h₃
-      simp
-  | [], p::ps => by simp at h₁
-  | x::xs, [] => by simp at h₁
-
-end
+: env.WF mem := by
+  induction ps generalizing xs env with
+  | nil =>
+    cases xs with
+    | nil =>
+      simp at h₁
+      subst env
+      simp [SimpleEnv.WF]
+    | cons => simp at h₁
+  | cons p ps ih =>
+    cases xs with
+    | nil => simp at h₁
+    | cons x xs =>
+      simp [Option.bind] at h₁
+      split at h₁ <;> simp at h₁
+      rename_i env₁ henv₁
+      split at h₁ <;> simp at h₁
+      rename_i env₂ henv₂
+      subst env
+      apply evalPattern_env_wf at henv₁
+      apply ih at henv₂
+      simp [h₂] at henv₁ henv₂
+      apply SimpleEnv.union_wf
+      . apply henv₂
+        intro x hx
+        apply h₃
+        simp [hx]
+      . apply henv₁
+        apply h₃
+        simp
 
 theorem chooseCaseR_env_wf (mem : Memory) (x : RValue)
                            (bs : List (Pattern × Expr))
@@ -1201,3 +1231,33 @@ theorem Eval_result_wf (st : State) (e : Expr) (r : Result Value)
   | err => simp
   | errL => simp
   | errR => simp
+
+theorem EvalList_result_wf (st : State) (es : List Expr)
+                           (r : Result (List RValue))
+                           (h₁ : st.WF) (h₂ : EvalList st es r)
+: r.WF (fun xs st => ∀ x ∈ xs, x.WF st.mem) := by
+  induction es generalizing st r with
+  | nil =>
+    cases h₂ with
+    | nil => simp [h₁]
+  | cons e es ih =>
+    cases h₂ with
+    | cons _ st₂ st₃ _ _ x xs h₂ h₃ =>
+      apply Eval_result_wf at h₂
+      on_goal 2 => assumption
+      simp at h₂
+      have := h₃
+      apply ih at h₃
+      on_goal 2 => exact h₂.2
+      simp at h₃
+      simp
+      and_intros
+      . apply EvalList_state_monotonic at this
+        apply RValue.WF_transport
+        . apply this.mem
+        . exact h₂.1
+      . exact h₃.1
+      . exact h₃.2
+    | err => simp
+    | errL => simp
+    | errR => simp

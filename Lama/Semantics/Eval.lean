@@ -304,6 +304,18 @@ def Value.toBox? (x : Value) : Except Error Box := do
   let x <- x.toRValue?.toExcept .lvalue
   x.toBox?.toExcept .type
 
+@[simp]
+theorem Value.toBox?_ok_iff (x : Value) (y : Box)
+: x.toBox? = .ok y <-> x = .rvalue (.box y) := by
+  unfold toBox?
+  simp [Bind.bind, Except.bind]
+  split <;> simp at *
+  . rename_i h
+    obtain ⟨ h, rfl ⟩ := h
+    cases x <;> simp at *
+  subst x
+  simp
+
 @[reducible]
 def Value.toLValue? : Value -> Option LValue
 | .lvalue x => .some x
