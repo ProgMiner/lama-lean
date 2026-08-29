@@ -1,6 +1,8 @@
-import Mathlib
+import Batteries.Data.ByteArray
+import Mathlib.Algebra.Ring.Int.Defs
+import Mathlib.Data.Finmap
 
-import Lama.Ast
+import Lama.Ast.Expr
 
 
 @[reducible]
@@ -22,6 +24,12 @@ theorem Option.toExcept_none_iff {α : Type u} {ε : Type v}
 : x.toExcept e = .error e' <-> x = .none ∧ e = e' where
   mp := by cases x <;> simp
   mpr := by cases x <;> simp
+
+@[simp]
+theorem Option.toExcept_toOption {ε : Type u} {α : Type v}
+                                 (e : ε) (x : Option α)
+: (x.toExcept e).toOption = x := by
+  cases x <;> simp [Except.toOption]
 
 @[reducible]
 def List.set? {α : Type u} (i : ℕ) (x : α) (xs : List α) : Option (List α) :=
@@ -54,17 +62,17 @@ deriving Repr, DecidableEq, Inhabited, Hashable
 
 -- Pure value
 inductive RValue where
-| int (n : Int)
+| int (n : ℤ)
 | box (b : Box)
 deriving Repr, DecidableEq, Inhabited, Hashable
 
 @[reducible]
-def RValue.toInt? : RValue -> Option Int
+def RValue.toInt? : RValue -> Option ℤ
 | .int n => .some n
 | .box _ => .none
 
 @[simp]
-theorem RValue.toInt?_some_iff (x : RValue) (y : Int)
+theorem RValue.toInt?_some_iff (x : RValue) (y : ℤ)
 : x.toInt? = .some y <-> x = .int y := by
   cases x <;> simp
 
@@ -121,13 +129,58 @@ inductive EnvValue where
 abbrev SimpleEnv : Type :=
   Finmap fun (_ : Ident) => EnvValue
 
+-- Closure environment
+inductive ClosedEnv where
+| empty
+| scope (xs : SimpleEnv) (parent : ClosedEnv)
+
+-- Environment lookup result
+inductive EnvLookup where
+| var (x : RValue)
+| fn (env : ClosedEnv) (params : List Ident) (body : Expr)
+
+@[reducible]
+def EnvValue.toLookup (env : ClosedEnv) : EnvValue -> EnvLookup
+| var x => .var x
+| fn params body => .fn env params body
+
+@[reducible]
+instance : EmptyCollection ClosedEnv where
+  emptyCollection := .empty
+
+@[reducible, simp]
+def ClosedEnv.lookup (x : Ident)
+: ClosedEnv -> Option EnvLookup
+| empty => .none
+| scope xs env =>
+  match xs.lookup x with
+  | .some x => .some $ x.toLookup (scope xs env)
+  | .none => env.lookup x
+
+@[reducible]
+instance : CoeFun ClosedEnv (fun _ => Ident -> Option EnvLookup) where
+  coe env := env.lookup
+
+@[reducible, simp]
+def ClosedEnv.assign (x : Ident) (y : RValue)
+: ClosedEnv -> Option ClosedEnv
+| empty => .none
+| scope xs env =>
+  match xs.lookup x with
+  | .some (.var _) =>
+    .some $ env.scope $ xs.insert x (.var y)
+  | .some (.fn _ _) => .none
+  | .none => do
+    let env <- env.assign x y
+    return env.scope xs
+
 -- Value in memory
 inductive BoxValue where
 | undefined
 | str (xs : ByteArray)
 | arr (xs : List RValue)
 | sexp (t : Tag) (xs : List RValue)
-| closure (env : SimpleEnv) (params : List Ident) (body : Expr)
+| closure (env : ClosedEnv) (params : List Ident) (body : Expr)
 
 @[reducible]
 def BoxValue.assign (i : ℕ) (x : RValue)
@@ -152,7 +205,16 @@ structure Memory where
 
 @[reducible]
 instance : CoeFun Memory (fun _ => Box -> BoxValue) where
-  coe mem box := mem.mem box
+  coe mem := mem.mem
+
+@[reducible]
+def Memory.empty : Memory where
+  mem _ := .undefined
+  bound := 0
+
+@[reducible]
+instance : EmptyCollection Memory where
+  emptyCollection := .empty
 
 @[reducible]
 def Memory.alloc (mem : Memory) : Box × Memory :=
@@ -174,15 +236,21 @@ inductive Environment where
 | closure (b : Box)
 | scope (xs : SimpleEnv) (parent : Environment)
 
--- Environment lookup result
-inductive EnvLookup where
-| var (x : RValue)
-| fn (env : Environment) (params : List Ident) (body : Expr)
-
 @[reducible]
-def EnvValue.toLookup (env : Environment) : EnvValue -> EnvLookup
-| var x => .var x
-| fn params body => .fn env params body
+instance : EmptyCollection Environment where
+  emptyCollection := .empty
+
+@[reducible, simp]
+def Environment.close (mem : Memory)
+: Environment -> Option ClosedEnv
+| empty => .some ∅
+| closure box =>
+  match mem box with
+  | .closure env _ _ => .some env
+  | _ => .none
+| scope xs env => do
+  let env <- env.close mem
+  return env.scope xs
 
 @[reducible, simp]
 def Environment.lookup (x : Ident) (mem : Memory)
@@ -190,13 +258,13 @@ def Environment.lookup (x : Ident) (mem : Memory)
 | empty => .error .name
 | closure b =>
   match mem b with
-  | .closure xs _ _ => do
-    let x <- (xs.lookup x).toExcept .name
-    return x.toLookup (closure b)
+  | .closure xs _ _ => (xs x).toExcept .name
   | _ => .error .metatheory
 | scope xs env =>
   match xs.lookup x with
-  | .some x => .ok $ x.toLookup (scope xs env)
+  | .some x => do
+    let env <- ((scope xs env).close mem).toExcept .metatheory
+    return x.toLookup env
   | .none => env.lookup x mem
 
 @[reducible]
@@ -209,13 +277,10 @@ def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
 | empty => .error .metatheory
 | closure b => do
   match mem b with
-  | .closure xs params body =>
-    match xs.lookup x with
-    | .some (.var _) =>
-      let xs := xs.insert x $ .var y
+  | .closure xs params body => do
+      let xs <- (xs.assign x y).toExcept .metatheory
       let mem := mem.assign b $ .closure xs params body
-      .ok (closure b, mem)
-    | _ => .error .metatheory
+      return (closure b, mem)
   | _ => .error .metatheory
 | scope xs env =>
   match xs.lookup x with
@@ -225,18 +290,6 @@ def Environment.assign (x : Ident) (y : RValue) (mem : Memory)
   | .none => do
     let (env, mem) <- env.assign x y mem
     return (env.scope xs, mem)
-
-@[reducible, simp]
-def Environment.close (mem : Memory)
-: Environment -> Option SimpleEnv
-| empty => .some ∅
-| closure box =>
-  match mem box with
-  | .closure env _ _ => .some env
-  | _ => .none
-| scope xs env => do
-  let env <- env.close mem
-  return xs ∪ env
 
 @[reducible]
 def Environment.pop
@@ -248,6 +301,15 @@ def Environment.pop
 structure State where
   env : Environment
   mem : Memory
+
+@[reducible]
+def State.empty : State where
+  env := ∅
+  mem := ∅
+
+@[reducible]
+instance : EmptyCollection State where
+  emptyCollection := .empty
 
 @[reducible]
 def State.allocWith (x : BoxValue) (st : State) : Box × State :=
@@ -285,12 +347,12 @@ theorem Value.toRValue?_some_iff (x : Value) (y : RValue)
   cases x <;> simp
 
 @[reducible]
-def Value.toInt? (x : Value) : Except Error Int := do
+def Value.toInt? (x : Value) : Except Error ℤ := do
   let x <- x.toRValue?.toExcept .lvalue
   x.toInt?.toExcept .type
 
 @[reducible]
-def Value.toNat? (x : Value) : Except Error Nat := do
+def Value.toNat? (x : Value) : Except Error ℕ := do
   let x <- x.toRValue?.toExcept .lvalue
   x.toNat?
 
@@ -360,7 +422,6 @@ def evalVar (st : State) (x : Ident) : Except Error (RValue × State) := do
   match <- st.env x st.mem with
   | .var x => return (x, st)
   | .fn env params body =>
-    let env <- (env.close st.mem).toExcept .metatheory
     let (box, st) := st.allocWith $ .closure env params body
     return (.box box, st)
 
@@ -567,7 +628,8 @@ def chooseCaseR (mem : Memory) (x : RValue)
   | .none => chooseCaseR mem x bs
 
 @[reducible]
-def chooseCase (mem : Memory) (x : Value) (bs : List (Pattern × Expr))
+def chooseCase (mem : Memory) (x : Value)
+               (bs : List (Pattern × Expr))
 : Except Error (SimpleEnv × Expr) := do
   let x <- x.toRValue?.toExcept .lvalue
   (chooseCaseR mem x bs).toExcept .runtime -- or .type ???

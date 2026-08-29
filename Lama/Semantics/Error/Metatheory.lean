@@ -1,14 +1,12 @@
-import Mathlib
-
-
 import Lama.Semantics.WellFormed
+
 
 namespace Lama.Semantics
 
 open Lama.Ast
 
 @[simp]
-theorem RValue.toNat?_metatheory_error (x : RValue)
+theorem RValue.toNat?_no_metatheory_error (x : RValue)
 : x.toNat? ≠ .error .metatheory := by
   unfold toNat?
   simp [Bind.bind, Except.bind]
@@ -17,6 +15,18 @@ theorem RValue.toNat?_metatheory_error (x : RValue)
   simp at h
   obtain ⟨ h, rfl ⟩ := h
   simp
+
+theorem ClosedEnv.assign_none (x : Ident) (y : RValue) (env : ClosedEnv)
+                              (h : env.assign x y = .none)
+: ∀ z, env.lookup x ≠ .some (.var z) := by
+  fun_induction assign with
+  | case1 => simp
+  | case2 => simp at h
+  | case3 xs env params body h' => simp [h']
+  | case4 xs env h' ih =>
+    simp [<- Option.eq_none_iff_forall_ne_some] at h
+    simp [h] at ih
+    simp [h', ih]
 
 @[simp]
 theorem BoxValue.assign_metatheory_error (i : ℕ) (x : RValue) (v : BoxValue)
@@ -52,54 +62,6 @@ theorem BoxValue.assign_metatheory_error (i : ℕ) (x : RValue) (v : BoxValue)
     obtain ⟨ h, rfl ⟩ := h
     simp
 
-theorem Environment.lookup_metatheory_error (env : Environment)
-                                            (x : Ident) (mem : Memory)
-                                            (h : env.lookup x mem = .error .metatheory)
-: ¬ env.WF mem := by
-  fun_induction lookup with
-  | case1 => simp at h
-  | case2 =>
-    simp [Functor.map, Except.map] at h
-    split at h <;> simp at h
-    rename_i h
-    subst h
-    simp at h
-  | case3 b h' =>
-    simp at h'
-    simp [h']
-  | case4 => simp at h
-  | case5 xs env h' ih =>
-    apply ih at h
-    simp [h]
-
-theorem Environment.assign_metatheory_error (x : Ident) (y : RValue)
-                                            (mem : Memory) (env : Environment)
-                                            (h : env.assign x y mem = .error .metatheory)
-: ∀ z, env.lookup x mem ≠ .ok (.var z) := by
-  fun_induction Environment.assign with
-  | case1 => simp
-  | case2 => simp at h
-  | case3 b xs params body h₁ h₂ =>
-    simp [h₁, Functor.map, Except.map]
-    split <;> simp
-    rename_i y' h
-    simp at h
-    simp [h] at h₂
-    intro z
-    unfold EnvValue.toLookup
-    cases y' <;> simp at *
-  | case4 => simp
-  | case5 => simp at h
-  | case6 xs env params body h' => simp [h']
-  | case7 xs env h' ih =>
-    simp [Functor.map, Except.map] at h
-    split at h <;> simp at h
-    subst h
-    rename_i h
-    apply ih at h
-    simp [h']
-    exact h
-
 theorem Environment.close_none (env : Environment) (mem : Memory)
                                (h : env.close mem = .none)
 : ¬ env.WF mem := by
@@ -116,6 +78,56 @@ theorem Environment.close_none (env : Environment) (mem : Memory)
     apply ih
     simp [Option.eq_none_iff_forall_ne_some, h]
 
+theorem Environment.lookup_metatheory_error (env : Environment)
+                                            (x : Ident) (mem : Memory)
+                                            (h : env.lookup x mem = .error .metatheory)
+: ¬ env.WF mem := by
+  fun_induction lookup with
+  | case1 => simp at h
+  | case2 => simp at h
+  | case3 b h' =>
+    simp at h'
+    simp [h']
+  | case4 xs env y h' =>
+    simp [Functor.map, Except.map] at h
+    split at h <;> simp at h
+    subst h
+    rename_i h
+    simp [<-Option.eq_none_iff_forall_ne_some] at h
+    apply close_none at h
+    simp [h]
+  | case5 xs env h' ih =>
+    apply ih at h
+    simp [h]
+
+theorem Environment.assign_metatheory_error (x : Ident) (y : RValue)
+                                            (mem : Memory) (env : Environment)
+                                            (h : env.assign x y mem = .error .metatheory)
+: ∀ z, env.lookup x mem ≠ .ok (.var z) := by
+  fun_induction assign with
+  | case1 => simp
+  | case2 box env params body h' =>
+    simp [Functor.map, Except.map] at h
+    split at h <;> simp at h
+    subst h
+    rename_i h
+    simp at h
+    apply ClosedEnv.assign_none at h
+    simp [h', h]
+  | case3 => simp
+  | case4 => simp at h
+  | case5 xs env params body h' =>
+    simp [h', Functor.map, Except.map]
+    split <;> simp
+  | case6 xs env h' ih =>
+    simp [Functor.map, Except.map] at h
+    split at h <;> simp at h
+    subst h
+    rename_i h
+    apply ih at h
+    simp [h']
+    exact h
+
 @[simp]
 theorem Environment.pop_none (env : Environment)
 : env.pop = .none <-> ∀ xs env', env ≠ .scope xs env' := by
@@ -129,7 +141,7 @@ theorem State.popEnv_none (st : State)
   simp [<-Option.eq_none_iff_forall_ne_some]
 
 @[simp]
-theorem Value.toInt?_metatheory_error (x : Value)
+theorem Value.toInt?_no_metatheory_error (x : Value)
 : x.toInt? ≠ .error .metatheory := by
   unfold toInt?
   simp [Bind.bind, Except.bind]
@@ -140,7 +152,7 @@ theorem Value.toInt?_metatheory_error (x : Value)
   simp
 
 @[simp]
-theorem Value.toNat?_metatheory_error (x : Value)
+theorem Value.toNat?_no_metatheory_error (x : Value)
 : x.toNat? ≠ .error .metatheory := by
   unfold toNat?
   simp [Bind.bind, Except.bind]
@@ -155,7 +167,7 @@ theorem Value.toNat?_metatheory_error (x : Value)
   simp
 
 @[simp]
-theorem Value.toBool?_metatheory_error (x : Value)
+theorem Value.toBool?_no_metatheory_error (x : Value)
 : x.toBool? ≠ .error .metatheory := by
   unfold toBool?
   simp [Bind.bind, Except.bind]
@@ -166,7 +178,7 @@ theorem Value.toBool?_metatheory_error (x : Value)
   simp
 
 @[simp]
-theorem Value.toBox?_metatheory_error (x : Value)
+theorem Value.toBox?_no_metatheory_error (x : Value)
 : x.toBox? ≠ Except.error Error.metatheory := by
   unfold toBox?
   simp [Bind.bind, Except.bind]
@@ -205,17 +217,6 @@ theorem evalVar_metatheory_error (st : State) (x : Ident)
     apply Environment.lookup_metatheory_error at h
     simp [State.WF_iff, h]
   split at h <;> try simp at h
-  split at h <;> try simp at h
-  subst h
-  rename_i h₁ _ h₂
-  apply Environment.lookup_wf at h₁
-  simp at h₁ h₂
-  apply Environment.close_none at h₂
-  intro h₃
-  apply h₂
-  apply h₁
-  . exact h₃.mem
-  . exact h₃.env
 
 theorem checkRef_some_metatheory (st : State) (x : Ident)
                                  (h : checkRef st x = .some .metatheory)
@@ -228,7 +229,7 @@ theorem checkRef_some_metatheory (st : State) (x : Ident)
   apply Environment.lookup_metatheory_error at h
   assumption
 
-theorem evalBinop_metatheory_error (x y : Value) (op : Binop)
+theorem evalBinop_no_metatheory_error (x y : Value) (op : Binop)
 : evalBinop x y op ≠ .error .metatheory := by
   unfold evalBinop
   cases op
@@ -355,7 +356,7 @@ theorem Eval_no_metatheory_error (st : State) (e : Expr) (r : Result Value)
     contrapose! h₄
     simp at h₄
     subst e
-    apply evalBinop_metatheory_error
+    apply evalBinop_no_metatheory_error
   | binopErrL st op x₁ x₂ e h ih =>
     apply ih
     assumption

@@ -1,5 +1,5 @@
-import Lama.Ast.Ident
 import Lama.Ast.Pattern
+
 
 namespace Lama.Ast
 
@@ -14,7 +14,7 @@ inductive Expr where
 /-- Variable l-value reference -/
 | ref (x : Ident)
 /-- Integer constant -/
-| int (n : Int)
+| int (n : ℤ)
 /-- String literal -/
 | str (s : String)
 /-- Array literal: [E*] -/

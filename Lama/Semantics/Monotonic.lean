@@ -1,9 +1,129 @@
-import Mathlib
-
 import Lama.Semantics.Eval
 
-namespace Lama.Semantics
 
+namespace Except
+
+variable {ε : Type u} {α β : Type v} {r : α -> α -> Prop}
+
+@[simp]
+theorem map_toOption (f : α -> β) (x : Except ε α)
+: (f <$> x).toOption = f <$> x.toOption := by
+  cases x <;> simp [Except.toOption]
+
+def SameShape (r : α -> α -> Prop)
+: Except ε α -> Except ε α -> Prop
+| .error x, .error y => x = y
+| .ok x, .ok y => r x y
+| _, _ => False
+
+@[simp]
+theorem SameShape_error (e : ε) (y : Except ε α)
+: SameShape r (.error e) y <-> y = .error e := by
+  cases y <;> simp [SameShape]
+  constructor <;> intro rfl <;> rfl
+
+@[simp]
+theorem SameShape_ok (x : α) (y : Except ε α)
+: SameShape r (.ok x) y <-> ∃ y', y = .ok y' ∧ r x y' := by
+  cases y <;> simp [SameShape]
+
+@[refl, simp]
+theorem SameShape_refl [h : Std.Refl r] (x : Except ε α)
+: SameShape r x x := by
+  cases x <;> simp
+  apply h.refl
+
+instance [Std.Refl r] : @Std.Refl (Except ε α) (SameShape r) := ⟨ SameShape_refl ⟩
+
+@[simp] -- `symm` causes unbounded metavariables
+theorem SameShape_symm [h₁ : Std.Symm r]
+                       (x y : Except ε α)
+                       (h₂ : SameShape r x y)
+: SameShape r y x := by
+  cases x <;> simp at *
+  . subst h₂
+    simp
+  obtain ⟨ y, rfl, h₂ ⟩ := h₂
+  apply h₁.symm; assumption
+
+instance [Std.Symm r] : @Std.Symm (Except ε α) (SameShape r) := ⟨ SameShape_symm ⟩
+
+@[trans]
+theorem SameShape_trans [h₁ : IsTrans _ r] (x y z : Except ε α)
+                        (h₂ : SameShape r x y) (h₃ : SameShape r y z)
+: SameShape r x z := by
+  cases x <;> simp at h₂
+  . subst h₂
+    simp at h₃
+    subst h₃
+    simp
+  obtain ⟨ y, rfl, h₂ ⟩ := h₂
+  simp at h₃
+  obtain ⟨ z, rfl, h₃ ⟩ := h₃
+  simp
+  trans <;> assumption
+
+instance [IsTrans _ r] : IsTrans (Except ε α) (SameShape r) := ⟨ SameShape_trans ⟩
+
+end Except
+
+namespace Option
+
+variable {α : Type u} {r : α -> α -> Prop}
+
+@[simp]
+theorem Rel_none (y : Option α)
+: Rel r .none y <-> y = .none := by
+  cases y <;> simp
+
+@[simp]
+theorem Rel_some (x : α) (y : Option α)
+: Rel r (.some x) y <-> ∃ y', y = .some y' ∧ r x y' := by
+  cases y <;> simp
+
+@[refl, simp]
+theorem Rel_refl [h : Std.Refl r] (x : Option α)
+: Rel r x x := by
+  cases x <;> simp
+  apply h.refl
+
+instance [Std.Refl r] : Std.Refl (Rel r) := ⟨ Rel_refl ⟩
+
+@[simp] -- `symm` causes unbounded metavariables
+theorem Rel_symm [h₁ : Std.Symm r]
+                 (x y : Option α)
+                 (h₂ : Rel r x y)
+: Rel r y x := by
+  cases x <;> cases y <;> simp at *
+  apply h₁.symm; assumption
+
+instance [Std.Symm r] : Std.Symm (Rel r) := ⟨ Rel_symm ⟩
+
+@[trans]
+theorem Rel_trans [h₁ : IsTrans _ r] (x y z : Option α)
+                  (h₂ : Rel r x y) (h₃ : Rel r y z)
+: Rel r x z := by
+  cases x <;> simp at h₂
+  . subst h₂
+    simp at h₃
+    subst h₃
+    simp
+  obtain ⟨ y, rfl, h₂ ⟩ := h₂
+  simp at h₃
+  obtain ⟨ z, rfl, h₃ ⟩ := h₃
+  simp
+  trans <;> assumption
+
+instance [IsTrans _ r] : IsTrans _ (Rel r) := ⟨ Rel_trans ⟩
+
+@[simp]
+theorem toExcept_same_shape {ε : Type v} (e : ε) (x y : Option α)
+: Except.SameShape r (x.toExcept e) (y.toExcept e) <-> Rel r x y := by
+  cases x <;> simp
+
+end Option
+
+namespace Lama.Semantics
 
 open Lama.Ast
 
@@ -12,17 +132,29 @@ def EnvValue.SameShape : EnvValue -> EnvValue -> Prop
 | fn xs₁ b₁, fn xs₂ b₂ => xs₁ = xs₂ ∧ b₁ = b₂
 | _, _ => False
 
+@[simp]
+theorem EnvValue.SameShape_var (x : RValue) (y : EnvValue)
+: SameShape (var x) y <-> ∃ y', y = .var y' := by
+  cases y <;> simp [SameShape]
+
+@[simp]
+theorem EnvValue.SameShape_fn (xs : List Ident) (b : Expr)
+                              (y : EnvValue)
+: SameShape (fn xs b) y <-> y = .fn xs b := by
+  cases y <;> simp [SameShape]
+  constructor <;> intro ⟨ rfl, rfl ⟩ <;> simp
+
 @[refl, simp]
 theorem EnvValue.SameShape_refl (x : EnvValue) : x.SameShape x := by
-  cases x <;> simp [SameShape]
+  cases x <;> simp
 
 instance : Std.Refl EnvValue.SameShape := ⟨ EnvValue.SameShape_refl ⟩
 
-@[symm]
+@[symm, simp]
 theorem EnvValue.SameShape_symm (x y : EnvValue)
                                 (h : x.SameShape y)
 : y.SameShape x := by
-  cases x <;> cases y <;> simp [SameShape] at *
+  cases x <;> cases y <;> simp at *
   simp [*]
 
 instance : Std.Symm EnvValue.SameShape := ⟨ EnvValue.SameShape_symm ⟩
@@ -32,47 +164,14 @@ theorem EnvValue.SameShape_trans (x y z : EnvValue)
                                  (h₁ : x.SameShape y)
                                  (h₂ : y.SameShape z)
 : x.SameShape z := by
-  cases x <;> cases y <;> cases z <;>
-  all_goals simp [SameShape] at *
-  simp [*]
+  cases x <;> cases y
+  all_goals simp at *
+  all_goals simp [*]
 
 instance : IsTrans _ EnvValue.SameShape := ⟨ EnvValue.SameShape_trans ⟩
 
-def EnvValue.SameShape'
-: Option EnvValue -> Option EnvValue -> Prop
-| .some x, .some y => x.SameShape y
-| .none, .none => True
-| _, _ => False
-
-@[refl, simp]
-theorem EnvValue.SameShape'_refl (x : Option EnvValue)
-: EnvValue.SameShape' x x := by
-  cases x <;> simp [SameShape']
-
-instance : Std.Refl EnvValue.SameShape' := ⟨ EnvValue.SameShape'_refl ⟩
-
-@[symm]
-theorem EnvValue.SameShape'_symm (x y : Option EnvValue)
-                                 (h : EnvValue.SameShape' x y)
-: EnvValue.SameShape' y x := by
-  cases x <;> cases y <;> simp [SameShape'] at *
-  symm; assumption
-
-instance : Std.Symm EnvValue.SameShape' := ⟨ EnvValue.SameShape'_symm ⟩
-
-@[trans]
-theorem EnvValue.SameShape'_trans (x y z : Option EnvValue)
-                                  (h₁ : EnvValue.SameShape' x y)
-                                  (h₂ : EnvValue.SameShape' y z)
-: EnvValue.SameShape' x z := by
-  cases x <;> cases y <;> cases z
-  all_goals simp [SameShape'] at *
-  trans <;> assumption
-
-instance : IsTrans _ EnvValue.SameShape' := ⟨ EnvValue.SameShape'_trans ⟩
-
 def SimpleEnv.SameShape (xs₁ xs₂ : SimpleEnv) : Prop :=
-  ∀ x, EnvValue.SameShape' (xs₁.lookup x) (xs₂.lookup x)
+  ∀ x, Option.Rel EnvValue.SameShape (xs₁.lookup x) (xs₂.lookup x)
 
 @[refl, simp]
 theorem SimpleEnv.SameShape_refl (xs : SimpleEnv)
@@ -81,12 +180,12 @@ theorem SimpleEnv.SameShape_refl (xs : SimpleEnv)
 
 instance : Std.Refl SimpleEnv.SameShape := ⟨ SimpleEnv.SameShape_refl ⟩
 
-@[symm]
+@[symm, simp]
 theorem SimpleEnv.SameShape_symm (xs ys : SimpleEnv)
                                  (h : xs.SameShape ys)
 : ys.SameShape xs := by
   simp [SameShape] at *
-  intro x; symm; apply h
+  intro x; simp [h]
 
 instance : Std.Symm SimpleEnv.SameShape := ⟨ SimpleEnv.SameShape_symm ⟩
 
@@ -102,32 +201,236 @@ theorem SimpleEnv.SameShape_trans (xs ys zs : SimpleEnv)
 
 instance : IsTrans _ SimpleEnv.SameShape := ⟨ SimpleEnv.SameShape_trans ⟩
 
+@[simp]
+def ClosedEnv.SameShape
+: ClosedEnv -> ClosedEnv -> Prop
+| empty, empty => True
+| scope xs₁ env₁, scope xs₂ env₂ =>
+  xs₁.SameShape xs₂ ∧ env₁.SameShape env₂
+| _, _ => False
+
+@[simp]
+theorem ClosedEnv.SameShape_empty (y : ClosedEnv)
+: SameShape .empty y <-> y = .empty := by
+  cases y <;> simp
+
+@[simp]
+theorem ClosedEnv.SameShape_scope (xs : SimpleEnv) (env y : ClosedEnv)
+: SameShape (.scope xs env) y <-> ∃ xs' env', y = .scope xs' env' ∧ xs.SameShape xs' ∧ env.SameShape env' := by
+  cases y <;> simp
+
+@[refl, simp]
+theorem ClosedEnv.SameShape_refl (x : ClosedEnv) : x.SameShape x := by
+  induction x <;> simp [*]
+
+instance : Std.Refl ClosedEnv.SameShape := ⟨ ClosedEnv.SameShape_refl ⟩
+
+@[symm, simp]
+theorem ClosedEnv.SameShape_symm (x y : ClosedEnv)
+                                 (h : x.SameShape y)
+: y.SameShape x := by
+  fun_induction SameShape x y with
+  | case1 => simp
+  | case2 xs₁ env₁ xs₂ env₂ ih =>
+    simp
+    and_intros
+    on_goal 2 =>
+      apply ih
+      simp [h]
+    intro x
+    simp [h.1 _]
+  | case3 => simp at h
+
+instance : Std.Symm ClosedEnv.SameShape := ⟨ ClosedEnv.SameShape_symm ⟩
+
+@[trans]
+theorem ClosedEnv.SameShape_trans (x y z : ClosedEnv)
+                                  (h₁ : x.SameShape y)
+                                  (h₂ : y.SameShape z)
+: x.SameShape z := by
+  fun_induction SameShape x y generalizing z with
+  | case1 => assumption
+  | case3 => simp at h₁
+  | case2 xs₁ env₁ xs₂ env₂ ih =>
+    cases z <;> simp at *
+    case scope xs₃ env₃ =>
+      specialize ih _ h₁.2 h₂.2
+      simp [ih]
+      intro x
+      replace h₁ := h₁.1 x
+      replace h₂ := h₂.1 x
+      trans <;> assumption
+
+instance : IsTrans _ ClosedEnv.SameShape := ⟨ ClosedEnv.SameShape_trans ⟩
+
+theorem ClosedEnv.assign_same_shape (x : Ident) (y : RValue)
+                                    (env env' : ClosedEnv)
+                                    (h : env.assign x y = .some env')
+: env.SameShape env' := by
+  fun_induction assign generalizing env' with
+  | case1 => simp at h
+  | case2 xs env y' h' =>
+    simp at h
+    subst h
+    simp
+    intro x'
+    by_cases hx : x' = x
+    on_goal 2 => simp [Finmap.lookup_insert_of_ne, hx]
+    subst x'
+    simp [h', EnvValue.SameShape]
+  | case3 => simp at h
+  | case4 xs env h' ih =>
+    simp [Option.bind] at h
+    split at h <;> simp at h
+    subst h
+    rename_i y' h
+    simp
+    apply ih _ h
+
+def EnvLookup.SameShape : EnvLookup -> EnvLookup -> Prop
+| var _, var _ => True
+| fn env₁ xs₁ b₁, fn env₂ xs₂ b₂ => env₁.SameShape env₂ ∧ xs₁ = xs₂ ∧ b₁ = b₂
+| _, _ => False
+
+@[simp]
+theorem EnvLookup.SameShape_var (x : RValue) (y : EnvLookup)
+: SameShape (var x) y <-> ∃ y', y = .var y' := by
+  cases y <;> simp [SameShape]
+
+@[simp]
+theorem EnvLookup.SameShape_fn (xs : List Ident) (b : Expr)
+                               (env : ClosedEnv) (y : EnvLookup)
+: SameShape (fn env xs b) y <-> ∃ env', y = .fn env' xs b ∧ env.SameShape env' := by
+  cases y <;> simp [SameShape]
+  constructor
+  . intro ⟨ h, rfl, rfl ⟩
+    simp [h]
+  . intro ⟨ ⟨ rfl, rfl ⟩, h ⟩
+    simp [h]
+
+@[refl, simp]
+theorem EnvLookup.SameShape_refl (x : EnvLookup) : x.SameShape x := by
+  cases x <;> simp
+
+instance : Std.Refl EnvLookup.SameShape := ⟨ EnvLookup.SameShape_refl ⟩
+
+@[symm, simp]
+theorem EnvLookup.SameShape_symm (x y : EnvLookup)
+                                 (h : x.SameShape y)
+: y.SameShape x := by
+  cases x <;> cases y <;> simp at *
+  simp [*]
+
+instance : Std.Symm EnvLookup.SameShape := ⟨ EnvLookup.SameShape_symm ⟩
+
+@[trans]
+theorem EnvLookup.SameShape_trans (x y z : EnvLookup)
+                                  (h₁ : x.SameShape y)
+                                  (h₂ : y.SameShape z)
+: x.SameShape z := by
+  cases x
+  all_goals simp at *
+  . obtain ⟨ y', rfl ⟩ := h₁
+    simp at h₂
+    assumption
+  obtain ⟨ env₁, rfl, h₁ ⟩ := h₁
+  simp at h₂
+  obtain ⟨ env₂, rfl, h₂ ⟩ := h₂
+  simp
+  trans <;> assumption
+
+instance : IsTrans _ EnvValue.SameShape := ⟨ EnvValue.SameShape_trans ⟩
+
+theorem EnvValue.toLookup_same_shape (x y : EnvValue) (env env' : ClosedEnv)
+                                     (h₁ : x.SameShape y) (h₂ : env.SameShape env')
+: (x.toLookup env).SameShape (y.toLookup env') := by
+  cases x <;> simp at *
+  . obtain ⟨ y, rfl ⟩ := h₁
+    simp
+  subst h₁
+  simp [h₂]
+
+theorem ClosedEnv.lookup_same_shape (x : Ident) (env env' : ClosedEnv)
+                                    (h : env.SameShape env')
+: Option.Rel EnvLookup.SameShape (env x) (env' x) := by
+  simp
+  fun_induction SameShape with
+  | case1 => simp
+  | case2 xs₁ env₁ xs₂ env₂ ih =>
+    simp
+    have := h.1 x
+    generalize xs₁.lookup x = y₁ at *
+    split <;> simp at this ⊢
+    on_goal 2 =>
+      simp [this]
+      apply ih
+      exact h.2
+    rename_i y₁
+    obtain ⟨ y₂, h₁, h₂ ⟩ := this
+    simp [h₁]
+    apply EnvValue.toLookup_same_shape
+    . assumption
+    . simp [h]
+  | case3 => simp at h
+
 def BoxValue.SameShape : BoxValue -> BoxValue -> Prop
 | undefined, undefined => True
-| str _, str _ => True
-| arr _, arr _ => True
-| sexp _ _, sexp _ _ => True
+| str xs₁, str xs₂ => xs₁.size = xs₂.size
+| arr xs₁, arr xs₂ => xs₁.length = xs₂.length
+| sexp t₁ xs₁, sexp t₂ xs₂ => t₁ = t₂ ∧ xs₁.length = xs₂.length
 | closure env₁ xs₁ b₁, closure env₂ xs₂ b₂ =>
   env₁.SameShape env₂ ∧ xs₁ = xs₂ ∧ b₁ = b₂
 | _, _ => False
 
 @[simp]
-theorem BoxValue.SameShape_undefined (x : BoxValue)
-: x.SameShape undefined <-> x = undefined := by
-  cases x <;> simp [SameShape]
+theorem BoxValue.SameShape_undefined (y : BoxValue)
+: SameShape undefined y <-> y = undefined := by
+  cases y <;> simp [SameShape]
+
+@[simp]
+theorem BoxValue.SameShape_str (xs : ByteArray) (y : BoxValue)
+: SameShape (str xs) y <-> ∃ ys, y = .str ys ∧ xs.size = ys.size := by
+  cases y <;> simp [SameShape]
+
+@[simp]
+theorem BoxValue.SameShape_arr (xs : List RValue) (y : BoxValue)
+: SameShape (arr xs) y <-> ∃ ys, y = .arr ys ∧ xs.length = ys.length := by
+  cases y <;> simp [SameShape]
+
+@[simp]
+theorem BoxValue.SameShape_sexp (t : Tag) (xs : List RValue) (y : BoxValue)
+: SameShape (sexp t xs) y <-> ∃ ys, y = .sexp t ys ∧ xs.length = ys.length := by
+  cases y <;> simp [SameShape]; intro
+  constructor <;> intro h <;> symm <;> assumption
+
+@[simp]
+theorem BoxValue.SameShape_closure (env : ClosedEnv) (xs : List Ident)
+                                   (b : Expr) (y : BoxValue)
+: SameShape (closure env xs b) y <-> ∃ env', y = .closure env' xs b ∧ env.SameShape env' := by
+  cases y <;> simp [SameShape]
+  constructor <;> intro h
+  . obtain ⟨ h, rfl, rfl ⟩ := h
+    simp [h]
+  . obtain ⟨ ⟨ rfl, rfl ⟩, h ⟩ := h
+    simp [h]
 
 @[refl, simp]
 theorem BoxValue.SameShape_refl (x : BoxValue) : x.SameShape x := by
-  cases x <;> simp [SameShape]
+  cases x <;> simp
 
 instance : Std.Refl BoxValue.SameShape := ⟨ BoxValue.SameShape_refl ⟩
 
-@[symm]
+@[symm, simp]
 theorem BoxValue.SameShape_symm (x y : BoxValue)
                                 (h : x.SameShape y)
 : y.SameShape x := by
-  cases x <;> cases y <;> simp [SameShape] at *
-  simp [*]; symm; simp [h]
+  cases x <;> cases y <;> simp at *
+  . symm; assumption
+  . symm; assumption
+  . obtain ⟨ rfl, h ⟩ := h
+    simp [h]
+  . obtain ⟨ ⟨ rfl, rfl ⟩, h ⟩ := h
+    simp; symm; assumption
 
 instance : Std.Symm BoxValue.SameShape := ⟨ BoxValue.SameShape_symm ⟩
 
@@ -136,11 +439,14 @@ theorem BoxValue.SameShape_trans (x y z : BoxValue)
                                  (h₁ : x.SameShape y)
                                  (h₂ : y.SameShape z)
 : x.SameShape z := by
-  cases x <;> cases y <;> cases z
-  all_goals simp [SameShape] at *
-  obtain ⟨ h₁, rfl, rfl ⟩ := h₁
-  obtain ⟨ h₂, rfl, rfl ⟩ := h₂
-  simp; trans <;> assumption
+  cases x <;> cases y
+  all_goals simp at *
+  all_goals try simp [*]
+  . obtain ⟨ zs, rfl, h₂ ⟩ := h₂
+    simp [h₁, h₂]
+  . obtain ⟨ zs, rfl, h₂ ⟩ := h₂
+    obtain ⟨ ⟨ rfl, rfl ⟩, h₁ ⟩ := h₁
+    simp; trans <;> assumption
 
 instance : IsTrans _ BoxValue.SameShape := ⟨ BoxValue.SameShape_trans ⟩
 
@@ -150,23 +456,44 @@ theorem BoxValue.assign_same_shape (x x' : BoxValue)
 : x.SameShape x' := by
   fun_cases assign with
   | case1 => simp at h
-  | case2 =>
+  | case2 xs =>
     simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h
     split at h <;> try simp at h
+    rename_i y' hy'
+    simp at hy'
+    subst hy'
     split at h <;> try simp at h
+    rename_i y hy
+    simp at hy
+    replace hy : y = y' := by
+      unfold Int.toNat? at hy
+      split at hy <;> simp at hy
+      subst hy
+      simp
+    subst hy
     split at h <;> try simp at h
+    rename_i xs hxs
+    simp at hxs
     subst h
-    simp [SameShape]
-  | case3 =>
+    obtain ⟨ h, rfl ⟩ := hxs
+    simp; symm
+    convert ByteArray.size_set _ ⟨ i, h ⟩ _
+  | case3 xs =>
     simp [Functor.map, Except.map] at h
     split at h <;> try simp at h
+    rename_i xs hxs
+    simp at hxs
     subst h
-    simp [SameShape]
-  | case4 =>
+    obtain ⟨ h, rfl ⟩ := hxs
+    simp
+  | case4 t xs =>
     simp [Functor.map, Except.map] at h
     split at h <;> try simp at h
+    rename_i xs hxs
+    simp at hxs
     subst h
-    simp [SameShape]
+    obtain ⟨ h, rfl ⟩ := hxs
+    simp
   | case5 => simp at h
 
 structure Memory.LE (m m' : Memory) : Prop where
@@ -233,30 +560,23 @@ theorem Environment.assign_memory_monotonic (x : Ident) (y : RValue)
 : mem ≤ mem' := by
   fun_induction assign generalizing mem' env' with
   | case1 => simp at h
-  | case2 b xs params body h₁ x' h₂ xs' mem' =>
-    simp at h
+  | case2 box env params body h' =>
+    simp [Functor.map, Except.map] at h
+    split at h <;> simp at h
     obtain ⟨ rfl, rfl ⟩ := h
-    subst xs' mem'
-    simp at h₁
-    simp [Memory.LE_iff]
-    intro b' h
-    split_ifs with h
-    on_goal 2 => simp
-    subst b'
-    simp [h₁, BoxValue.SameShape, SimpleEnv.SameShape]
-    intro x'
-    by_cases hx : x' = x
-    on_goal 2 => simp [Finmap.lookup_insert_of_ne, hx]
-    subst x'
-    simp [h₂, EnvValue.SameShape', EnvValue.SameShape]
+    rename_i env' h
+    simp at h
+    apply Memory.assign_monotonic
+    simp [h', BoxValue.SameShape]
+    apply ClosedEnv.assign_same_shape at h
+    assumption
   | case3 => simp at h
-  | case4 => simp at h
-  | case5 =>
+  | case4 xs env y h' =>
     simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     simp
-  | case6 => simp at h
-  | case7 xt env h ih =>
+  | case5 => simp at h
+  | case6 xt env h ih =>
     simp [Functor.map, Except.map] at h
     split at h <;> simp at h
     obtain ⟨ rfl, rfl ⟩ := h
@@ -273,13 +593,29 @@ def Environment.SameShape
   xs₁.SameShape xs₂ ∧ env₁.SameShape env₂
 | _, _ => False
 
+@[simp]
+theorem Environment.SameShape_empty (y : Environment)
+: SameShape .empty y <-> y = .empty := by
+  cases y <;> simp
+
+@[simp]
+theorem Environment.SameShape_closure (box : Box) (y : Environment)
+: SameShape (.closure box) y <-> y = .closure box := by
+  cases y <;> simp
+  constructor <;> intro <;> symm <;> assumption
+
+@[simp]
+theorem Environment.SameShape_scope (xs : SimpleEnv) (env y : Environment)
+: SameShape (.scope xs env) y <-> ∃ xs' env', y = .scope xs' env' ∧ xs.SameShape xs' ∧ env.SameShape env' := by
+  cases y <;> simp
+
 @[refl, simp]
 theorem Environment.SameShape_refl (x : Environment) : x.SameShape x := by
   induction x <;> simp [*]
 
 instance : Std.Refl Environment.SameShape := ⟨ Environment.SameShape_refl ⟩
 
-@[symm]
+@[symm, simp]
 theorem Environment.SameShape_symm (x y : Environment)
                                    (h : x.SameShape y)
 : y.SameShape x := by
@@ -294,8 +630,7 @@ theorem Environment.SameShape_symm (x y : Environment)
       apply ih
       simp [h]
     intro x
-    symm
-    apply h.1
+    simp [h.1 _]
 
 instance : Std.Symm Environment.SameShape := ⟨ Environment.SameShape_symm ⟩
 
@@ -320,19 +655,66 @@ theorem Environment.SameShape_trans (x y z : Environment)
 
 instance : IsTrans _ Environment.SameShape := ⟨ Environment.SameShape_trans ⟩
 
+theorem Environment.close_same_shape (mem : Memory)
+                                     (env env' : Environment)
+                                     (h : env.SameShape env')
+: Option.Rel ClosedEnv.SameShape (env.close mem) (env'.close mem) := by
+  fun_induction SameShape with
+  | case1 => simp
+  | case2 =>
+    subst h
+    simp
+  | case3 xs₁ env₁ xs₂ env₂ ih =>
+    simp [h] at ih
+    simp [Option.bind]
+    generalize h₁ : env₁.close mem = res₁ at *
+    generalize h₂ : env₂.close mem = res₂ at *
+    split <;> split <;> simp at *
+    simp [h, ih]
+  | case4 => simp at h
+
+theorem Environment.lookup_same_shape (x : Ident) (mem : Memory)
+                                      (env env' : Environment)
+                                      (h : env.SameShape env')
+: Except.SameShape EnvLookup.SameShape (env x mem) (env' x mem) := by
+  simp
+  fun_induction SameShape with
+  | case1 => simp
+  | case2 box =>
+    subst h
+    simp
+  | case3 xs₁ env₁ xs₂ env₂ ih =>
+    simp
+    have := h.1 x
+    generalize xs₁.lookup x = y₁ at *
+    split <;> simp at this ⊢
+    on_goal 2 =>
+      simp [this]
+      apply ih
+      exact h.2
+    rename_i y₁
+    obtain ⟨ y₂, h₁, h₂ ⟩ := this
+    simp [h₁, Option.bind]
+    have := close_same_shape mem _ _ h.2
+    generalize h₃ : env₁.close mem = env₁' at *
+    generalize h₄ : env₂.close mem = env₂' at *
+    split <;> split <;> simp at *
+    apply EnvValue.toLookup_same_shape <;> simp [*]
+  | case4 => simp at h
+
 theorem Environment.assign_same_shape (x : Ident) (y : RValue)
                                       (mem mem' : Memory) (env env' : Environment)
                                       (h : env.assign x y mem = .ok (env', mem'))
 : env.SameShape env' := by
   fun_induction assign generalizing env' mem' with
   | case1 => simp at h
-  | case2 =>
-    simp at h
+  | case2 box env params body h' =>
+    simp [Functor.map, Except.map] at h
+    split at h <;> simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     simp
   | case3 => simp at h
-  | case4 => simp at h
-  | case5 xs env y' h =>
+  | case4 xs env y' h =>
     simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     simp
@@ -340,9 +722,9 @@ theorem Environment.assign_same_shape (x : Ident) (y : RValue)
     by_cases hx : x' = x
     on_goal 2 => simp [Finmap.lookup_insert_of_ne, hx]
     subst x'
-    simp [h, EnvValue.SameShape', EnvValue.SameShape]
-  | case6 => simp at h
-  | case7 xs env h ih =>
+    simp [h, EnvValue.SameShape]
+  | case5 => simp at h
+  | case6 xs env h ih =>
     simp [Functor.map, Except.map] at h
     split at h <;> simp at h
     obtain ⟨ rfl, rfl ⟩ := h
@@ -415,8 +797,6 @@ theorem evalVar_state_monotonic (st st' : State)
   . obtain ⟨ rfl, rfl ⟩ := h
     simp
   rename_i env params body
-  generalize Environment.close st.mem env = env' at h
-  cases env' <;> simp at h
   obtain ⟨ rfl, rfl ⟩ := h
   apply State.allocWith_monotonic
   rfl

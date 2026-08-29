@@ -1,6 +1,8 @@
-import Mathlib
+import Mathlib.Data.Nat.Lattice
+import Mathlib.Data.Nat.SuccPred
 
 import Lama.Semantics.Monotonic
+
 
 namespace Lama.Semantics
 
@@ -21,7 +23,7 @@ def RValue.WF (mem : Memory) : RValue -> Prop
 | box b => b.WF mem
 
 @[simp]
-theorem RValue.WF_int (mem : Memory) (x : Int)
+theorem RValue.WF_int (mem : Memory) (x : ℤ)
 : WF mem (int x) := True.intro
 
 @[simp]
@@ -82,6 +84,94 @@ theorem SimpleEnv.union_wf (mem : Memory) (env₁ env₂ : SimpleEnv)
   . apply h₂ at hy
     assumption
 
+@[reducible, simp]
+def ClosedEnv.WF (mem : Memory)
+: ClosedEnv → Prop
+| .empty => True
+| .scope xs env => xs.WF mem ∧ ClosedEnv.WF mem env
+
+@[simp]
+theorem ClosedEnv.empty_wf (mem : Memory)
+: WF mem ∅ := True.intro
+
+theorem ClosedEnv.WF_transport (mem mem' : Memory)
+                               (env : ClosedEnv)
+                               (h₁ : mem ≤ mem')
+                               (h₂ : env.WF mem)
+: env.WF mem' := by
+  fun_induction env.WF mem with
+  | case1 => simp
+  | case2 xs env ih =>
+    simp [ih, h₂]
+    exact SimpleEnv.WF_transport _ _ _ h₁ h₂.1
+
+def EnvLookup.WF (mem : Memory) : EnvLookup -> Prop
+| var x => x.WF mem
+| fn env _ _ => env.WF mem
+
+@[simp]
+theorem EnvLookup.WF_var (mem : Memory) (x : RValue)
+: WF mem (var x) <-> x.WF mem := by rfl
+
+@[simp]
+theorem EnvLookup.WF_fn (mem : Memory) (env : ClosedEnv)
+                        (params : List Ident) (body : Expr)
+: WF mem (fn env params body) <-> env.WF mem := by rfl
+
+theorem EnvValue.toLookup_wf (mem : Memory) (env : ClosedEnv) (x : EnvValue)
+                             (h₁ : env.WF mem) (h₂ : x.WF mem)
+: (x.toLookup env).WF mem := by
+  cases x with
+  | var => exact h₂
+  | fn => exact h₁
+
+theorem ClosedEnv.lookup_wf (env : ClosedEnv) (mem : Memory)
+                            (x : Ident) (res : EnvLookup)
+                            (h₁ : env.lookup x = .some res)
+                            (h₂ : env.WF mem)
+: res.WF mem := by
+  fun_induction lookup with
+  | case1 => simp at h₁
+  | case2 xs env y h =>
+    simp at h₁
+    subst h₁
+    apply EnvValue.toLookup_wf
+    . assumption
+    apply h₂.1
+    assumption
+  | case3 xs env h ih =>
+    apply ih
+    . assumption
+    . exact h₂.2
+
+theorem ClosedEnv.assign_wf (x : Ident) (y : RValue)
+                            (env env' : ClosedEnv)
+                            (mem : Memory)
+                            (h₁ : env.WF mem) (h₂ : y.WF mem)
+                            (h₃ : env.assign x y = .some env')
+: env'.WF mem := by
+  fun_induction assign generalizing env' with
+  | case1 => simp at h₃
+  | case2 xs env y' h =>
+    simp at h₃
+    subst h₃
+    simp at h₁
+    simp [h₁]
+    apply SimpleEnv.insert_wf
+    . simp [h₁]
+    . simp [h₂]
+  | case3 => simp at h₃
+  | case4 xs env h ih =>
+    simp [Option.bind] at h₃
+    split at h₃ <;> simp at h₃
+    subst env'
+    rename_i env' h
+    simp at h₁
+    simp [h₁]
+    apply ih
+    . simp [h₁]
+    . assumption
+
 def BoxValue.WF (mem : Memory) : BoxValue -> Prop
 | undefined => True
 | str _ => True
@@ -106,7 +196,7 @@ theorem BoxValue.WF_sexp (mem : Memory) (t : Tag) (xs : List RValue)
 : WF mem (sexp t xs) <-> ∀ x ∈ xs, x.WF mem := by rfl
 
 @[simp]
-theorem BoxValue.WF_closure (mem : Memory) (env : SimpleEnv)
+theorem BoxValue.WF_closure (mem : Memory) (env : ClosedEnv)
                             (xs : List Ident) (body : Expr)
 : WF mem (closure env xs body) <-> env.WF mem := by rfl
 
@@ -176,41 +266,48 @@ theorem Memory.WF_iff (m : Memory)
     obtain ⟨ h₁, h₂ ⟩ := h
     exact ⟨ h₁, h₂ ⟩
 
-theorem Memory.assign_wf (box : Box) (value : BoxValue)
-                         (mem : Memory) (h₁ : mem.WF)
-                         (h₂ : value.WF mem) (h₃ : value ≠ .undefined)
-                         (h₄ : box.WF mem)
+@[simp]
+theorem Memory.empty_wf : WF ∅ := by
+  simp [Memory.WF_iff, EmptyCollection.emptyCollection, empty]
+
+theorem Memory.assign_wf (box : Box) (value : BoxValue) (mem : Memory)
+                         (h₁ : mem.WF) (h₂ : value.WF mem)
+                         (h₃ : (mem box).SameShape value)
 : (mem.assign box value).WF := by
   simp [WF_iff]
-  and_intros
-  . intro b
-    split_ifs
+  and_intros <;> intro b
+  . split_ifs
     . subst b
-      simp [h₃, h₄]
+      have := h₁.bound box
+      simp at this
+      rw [<- this]
+      repeat rw [<- BoxValue.SameShape_undefined]
+      constructor <;> intro h <;> trans <;> try assumption
+      symm; assumption
     . simp [h₁.bound]
-  . intro b
+  . apply BoxValue.WF_transport
+    . apply assign_monotonic
+      assumption
     split_ifs with hb
     . subst b
-      simpa [Memory.assign] using h₂
-    . simpa [Memory.assign, hb] using h₁.mem b
+      assumption
+    apply h₁.mem
 
 theorem Memory.allocWith_wf (mem mem' : Memory) (x : BoxValue) (b : Box)
                             (h₁ : mem.WF) (h₂ : x.WF mem) (h₃ : x ≠ .undefined)
                             (h₄ : mem.allocWith x = (b, mem'))
 : mem'.WF ∧ b.WF mem' := by
   obtain ⟨ rfl, rfl ⟩ := h₄
-  simp [Memory.WF_iff]
-  and_intros
-  . intro b
-    split_ifs with hb
+  simp [WF_iff]
+  and_intros <;> intro b
+  . split_ifs with hb
     . subst b
       simp [h₃]
     obtain ⟨ b ⟩ := b
     simp at hb ⊢
     simp [h₁.bound]
     lia
-  . intro b
-    apply BoxValue.WF_transport mem
+  . apply BoxValue.WF_transport mem
     . apply Memory.allocWith_monotonic
       rfl
     split_ifs
@@ -226,29 +323,29 @@ theorem Environment.assign_memory_wf (x : Ident) (y : RValue)
 : mem'.WF := by
   fun_induction assign generalizing env' mem' with
   | case1 => simp at h₃
-  | case2 b xs params body h₃ y h₄ xs' mem' =>
-    simp at h₃
+  | case2 box env params body h =>
+    simp [Functor.map, Except.map] at h₃
+    split at h₃ <;> simp at h₃
     obtain ⟨ rfl, rfl ⟩ := h₃
-    subst xs' mem'
+    rename_i env' h'
+    simp at h'
     apply Memory.assign_wf
     . assumption
-    . apply SimpleEnv.insert_wf
-      . have := h₁.mem b
-        rw [h₃] at this
-        exact this
-      . exact h₂
     . simp
-    . contrapose h₃
-      rw [<- h₁.bound] at h₃
-      simp [h₃]
+      apply ClosedEnv.assign_wf at h' <;> try assumption
+      have := h₁.mem box
+      simp [h] at this
+      assumption
+    . apply ClosedEnv.assign_same_shape at h'
+      symm
+      simp [h, h']
   | case3 => simp at h₃
-  | case4 => simp at h₃
-  | case5 =>
+  | case4 =>
     simp at h₃
     obtain ⟨ rfl, rfl ⟩ := h₃
     assumption
-  | case6 => simp at h₃
-  | case7 xs env h ih =>
+  | case5 => simp at h₃
+  | case6 xs env h ih =>
     simp [Functor.map, Except.map] at h₃
     split at h₃ <;> simp at h₃
     obtain ⟨ rfl, rfl ⟩ := h₃
@@ -263,6 +360,10 @@ def Environment.WF (mem : Memory)
 | .closure box =>
   ∃ env params body, mem box = .closure env params body
 | .scope xs env => xs.WF mem ∧ Environment.WF mem env
+
+@[simp]
+theorem Environment.empty_wf (mem : Memory)
+: WF mem ∅ := True.intro
 
 theorem Environment.WF_transport (mem mem' : Memory)
                                  (env : Environment)
@@ -283,93 +384,11 @@ theorem Environment.WF_transport (mem mem' : Memory)
     have := h₂.bound box
     simp [h₃] at this
     simp [this, h₃] at h₁
-    generalize h : mem'.mem box = v' at *
-    cases v' <;> simp [BoxValue.SameShape] at h₁
-    rename_i env' params' body'
-    use env', params', body'
-
-def EnvLookup.WF (mem : Memory) : EnvLookup -> Prop
-| var x => x.WF mem
-| fn env _ _ => env.WF mem
-
-@[simp]
-theorem EnvLookup.WF_var (mem : Memory) (x : RValue)
-: WF mem (var x) <-> x.WF mem := by rfl
-
-@[simp]
-theorem EnvLookup.WF_fn (mem : Memory) (env : Environment)
-                        (params : List Ident) (body : Expr)
-: WF mem (fn env params body) <-> env.WF mem := by rfl
-
-theorem EnvValue.toLookup_wf (mem : Memory) (env : Environment) (x : EnvValue)
-                             (h₁ : env.WF mem) (h₂ : x.WF mem)
-: (x.toLookup env).WF mem := by
-  cases x with
-  | var => exact h₂
-  | fn => exact h₁
-
-theorem Environment.lookup_wf (env : Environment) (mem : Memory)
-                              (x : Ident) (res : EnvLookup)
-                              (h₁ : env.lookup x mem = .ok res)
-                              (h₃ : mem.WF) (h₂ : env.WF mem)
-: res.WF mem := by
-  fun_induction lookup with
-  | case1 => simp at h₁
-  | case2 box xs params body h =>
-    simp [Functor.map, Except.map] at h₁
-    split at h₁ <;> simp at h₁
-    rename_i y h₄
-    simp at h₄
-    subst res
-    apply EnvValue.toLookup_wf
-    . exact h₂
-    have := h₃.mem box
-    rw [h] at this
-    apply this
-    apply h₄
-  | case3 => simp at h₁
-  | case4 xs env y h' =>
-    simp at h₁
-    subst res
-    apply EnvValue.toLookup_wf
-    . assumption
-    apply h₂.1
-    assumption
-  | case5 xs env h' ih => exact ih h₁ h₂.2
-
-theorem Environment.assign_wf (x : Ident) (y : RValue)
-                              (mem mem' : Memory) (env env' : Environment)
-                              (h₁ : env.WF mem) (h₂ : y.WF mem)
-                              (h₃ : env.assign x y mem = .ok (env', mem'))
-: env'.WF mem := by
-  fun_induction assign generalizing env' mem' with
-  | case1 => simp at h₃
-  | case2 b xs params body h₂ y h₃ xs' mem' =>
-    simp at h₃
-    obtain ⟨ rfl, rfl ⟩ := h₃
-    subst xs' mem'
-    assumption
-  | case3 => simp at h₃
-  | case4 => simp at h₃
-  | case5 =>
-    simp at h₃
-    obtain ⟨ rfl, rfl ⟩ := h₃
-    simp at h₁ ⊢
+    obtain ⟨ env', h₁, - ⟩ := h₁
     simp [h₁]
-    apply SimpleEnv.insert_wf
-    . simp [h₁]
-    . simp [h₂]
-  | case6 => simp at h₃
-  | case7 xs env h ih =>
-    simp [Functor.map, Except.map] at h₃
-    split at h₃ <;> simp at h₃
-    obtain ⟨ rfl, rfl ⟩ := h₃
-    rename_i h'
-    specialize ih _ _ h₁.2 h'
-    simp [h₁, ih]
 
 theorem Environment.close_wf (mem : Memory) (env : Environment)
-                             (env' : SimpleEnv)
+                             (env' : ClosedEnv)
                              (h₁ : mem.WF) (h₂ : env.WF mem)
                              (h₃ : env.close mem = .some env')
 : env'.WF mem := by
@@ -377,7 +396,7 @@ theorem Environment.close_wf (mem : Memory) (env : Environment)
   | case1 =>
     simp at h₃
     subst env'
-    simp [SimpleEnv.WF]
+    simp
   | case2 b xs params body h₃ =>
     simp at h₃
     subst env'
@@ -392,9 +411,143 @@ theorem Environment.close_wf (mem : Memory) (env : Environment)
     rename_i res h
     simp at h₂
     specialize ih _ h₂.2 h
-    apply SimpleEnv.union_wf
+    simp [h₂, ih]
+
+theorem Environment.close_transport (mem mem' : Memory)
+                                    (env : Environment)
+                                    (env₁ : ClosedEnv)
+                                    (h₁ : mem ≤ mem') (h₂ : mem.WF)
+                                    (h₃ : env.close mem = .some env₁)
+: ∃ env₂, env.close mem' = .some env₂ ∧ env₁.SameShape env₂ := by
+  fun_induction env.close mem generalizing env₁ with
+  | case1 =>
+    simp at h₃
+    subst h₃
+    simp
+  | case2 box env params body h =>
+    simp at h₃
+    subst h₃
+    have := h₂.bound box
+    simp [h] at this
+    replace := h₁.vals box this
+    simp [h] at this
+    obtain ⟨ env', h₄, h₅ ⟩ := this
+    simp [h₄, h₅]
+  | case3 => simp at h₃
+  | case4 xs env ih =>
+    simp [Option.bind] at h₃
+    split at h₃ <;> simp at h₃
+    subst h₃
+    rename_i env₁ h
+    simp [h] at ih
+    obtain ⟨ env₂, ih₁, ih₂ ⟩ := ih
+    simp [ih₁, ih₂]
+
+theorem Environment.lookup_transport (mem mem' : Memory) (x : Ident)
+                                     (env : Environment) (y : EnvLookup)
+                                     (h₁ : mem ≤ mem') (h₂ : mem.WF)
+                                     (h₃ : env x mem = .ok y)
+: ∃ y', env x mem' = .ok y' ∧ y.SameShape y' := by
+  simp at h₃ ⊢
+  fun_induction env.lookup x mem with
+  | case1 => simp at h₃
+  | case2 box env params body h =>
+    simp at h₃
+    have := h₂.bound box
+    simp [h] at this
+    replace := h₁.vals box this
+    simp [h] at this
+    obtain ⟨ env', h₄, h₅ ⟩ := this
+    simp [h₄]
+    have := ClosedEnv.lookup_same_shape x _ _ h₅
+    simp [h₃] at this
+    assumption
+  | case3 => simp at h₃
+  | case4 xs env y h =>
+    simp [Functor.map, Except.map] at h₃
+    split at h₃ <;> simp at h₃
+    subst h₃
+    rename_i res h'
+    simp [Option.bind] at h'
+    split at h' <;> simp at h'
+    subst h'
+    rename_i res h'
+    apply Environment.close_transport _ mem' at h'
+    on_goal 2 => assumption
+    on_goal 2 => assumption
+    obtain ⟨ res', h₃, h₄ ⟩ := h'
+    simp [h, h₃]
+    apply EnvValue.toLookup_same_shape <;> simp [h₄]
+  | case5 xs env h ih =>
+    simp [h₃] at ih
+    simp [h, ih]
+
+theorem Environment.lookup_wf (env : Environment) (mem : Memory)
+                              (x : Ident) (res : EnvLookup)
+                              (h₁ : env.lookup x mem = .ok res)
+                              (h₂ : mem.WF) (h₃ : env.WF mem)
+: res.WF mem := by
+  fun_induction lookup with
+  | case1 => simp at h₁
+  | case2 box xs params body h =>
+    simp at h₁
+    apply ClosedEnv.lookup_wf at h₁
+    apply h₁
+    have := h₂.mem box
+    simp [h] at this
+    assumption
+  | case3 => simp at h₁
+  | case4 xs env y h' =>
+    simp [Functor.map, Except.map] at h₁
+    split at h₁ <;> simp at h₁
+    subst h₁
+    rename_i xs' h
+    simp [Option.bind] at h
+    split at h <;> simp at h
+    subst h
+    rename_i env' h
+    simp at h₃
+    apply EnvValue.toLookup_wf
+    . simp [h₃]
+      apply close_wf at h
+      . assumption
+      . assumption
+      . exact h₃.2
+    . apply h₃.1
+      assumption
+  | case5 xs env h' ih => exact ih h₁ h₃.2
+
+theorem Environment.assign_wf (x : Ident) (y : RValue)
+                              (mem mem' : Memory) (env env' : Environment)
+                              (h₁ : env.WF mem) (h₂ : y.WF mem)
+                              (h₃ : env.assign x y mem = .ok (env', mem'))
+: env'.WF mem := by
+  fun_induction assign generalizing env' mem' with
+  | case1 => simp at h₃
+  | case2 box env params body h =>
+    simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h₃
+    split at h₃ <;> simp at h₃
+    obtain ⟨ rfl, rfl ⟩ := h₃
+    simp [h]
+  | case3 => simp at h₃
+  | case4 =>
+    simp at h₃
+    obtain ⟨ rfl, rfl ⟩ := h₃
+    simp at h₁ ⊢
+    simp [h₁]
+    apply SimpleEnv.insert_wf
+    . simp [h₁]
     . simp [h₂]
-    . assumption
+  | case5 => simp at h₃
+  | case6 xs env h ih =>
+    simp [Functor.map, Except.map] at h₃
+    split at h₃ <;> simp at h₃
+    obtain ⟨ rfl, rfl ⟩ := h₃
+    rename_i res h'
+    obtain ⟨ env', mem' ⟩ := res
+    specialize ih _ _ h₁.2 h'
+    simp [ih]
+    exact h₁.1
 
 structure State.WF (st : State) : Prop where
   env : st.env.WF st.mem
@@ -408,6 +561,12 @@ theorem State.WF_iff (st : State)
   mpr h := by
     obtain ⟨ h₁, h₂ ⟩ := h
     exact ⟨ h₁, h₂ ⟩
+
+@[simp]
+theorem State.empty_wf
+: WF ∅ := by
+  unfold EmptyCollection.emptyCollection
+  simp [State.WF_iff]
 
 theorem State.allocWith_wf (st st' : State)
                            (x : BoxValue) (b : Box)
@@ -446,79 +605,15 @@ theorem LValue.WF_transport (st st' : State) (x : LValue)
   cases x with
   | var x =>
     simp at *
-    obtain ⟨ y, h₃ ⟩ := h₃
-    simp [State.WF_iff] at h₁
-    simp [State.LE_iff] at h₂
-    obtain ⟨ env, mem ⟩ := st
-    obtain ⟨ env', mem' ⟩ := st'
-    simp at *
-    fun_induction env.lookup x mem generalizing env' with
-    | case1 => simp at h₃
-    | case2 box xs params body h =>
-      simp [Functor.map, Except.map] at h₃
-      split at h₃ <;> simp at h₃
-      rename_i y' h'
-      simp at h'
-      cases y' <;> simp at h₃
-      subst y
-      rename_i y
-      cases env' <;> simp at h₁ h₂
-      obtain ⟨ h₂, rfl ⟩ := h₂
-      have : box.cell < mem.bound := by
-        have := h₁.2.bound box
-        rw [h] at this
-        simp at this
-        assumption
-      replace := h₂.vals box this
-      rw [h] at this
-      simp
-      generalize h_res : mem'.mem box = res
-      simp [h_res] at this
-      cases res <;> simp [BoxValue.SameShape] at this
-      obtain ⟨ this, rfl, rfl ⟩ := this
-      rename_i xs'
-      simp [Functor.map, Except.map]
-      specialize this x
-      rw [h'] at this
-      split <;> rename_i h'' <;> simp at h''
-      . rw [h''.1] at this
-        simp [EnvValue.SameShape'] at this
-      rename_i y'
-      rw [h''] at this
-      simp [EnvValue.SameShape'] at this
-      cases y' <;> simp [EnvValue.SameShape] at this
-      rename_i y'
-      use y'
-    | case3 => simp at h₃
-    | case4 xs env x' h =>
-      simp at h₁ h₃
-      cases env' <;> simp [Environment.SameShape] at h₂
-      rename_i xs' env'
-      simp
-      have := h₂.2.1 x
-      generalize h_y' : xs'.lookup x = y'
-      rw [h, h_y'] at this
-      cases y' <;> simp [EnvValue.SameShape'] at this
-      rename_i y'
-      simp
-      cases x' <;> simp at h₃
-      cases y' <;> simp [EnvValue.SameShape] at this
-      rename_i y'
-      use y'
-    | case5 xs env h ih =>
-      simp at h₁
-      specialize ih h₃ ⟨ h₁.1.2, h₁.2 ⟩
-      cases env' <;> simp at h₂
-      rename_i xs' env'
-      specialize ih _ ⟨ h₂.1, h₂.2.2 ⟩
-      obtain ⟨ y, ih ⟩ := ih
-      use y
-      simp
-      have := h₂.2.1 x
-      generalize h_y' : xs'.lookup x = y'
-      rw [h, h_y'] at this
-      cases y' <;> simp [EnvValue.SameShape'] at this
-      simp [ih]
+    obtain ⟨ y₁, h₃ ⟩ := h₃
+    have := Environment.lookup_same_shape x st.mem _ _ h₂.env
+    simp [h₃] at this
+    obtain ⟨ y₂, h₄ ⟩ := this
+    apply Environment.lookup_transport _ st'.mem at h₄
+    on_goal 2 => exact h₂.mem
+    on_goal 2 => exact h₁.mem
+    simp at h₄
+    assumption
   | elem b i =>
     simp at h₃ ⊢
     grw [<- h₂.mem.bound]
@@ -589,10 +684,8 @@ theorem Result.popEnv_wf (r : Result Value)
     simp [Finmap.lookup_eq_none.mpr h₂] at h
     simp [State.WF_iff, h]
 
-theorem evalVar_wf (st st' : State)
-                   (x : Ident) (y : RValue)
-                   (h₁ : st.WF)
-                   (h₂ : evalVar st x = .ok (y, st'))
+theorem evalVar_wf (st st' : State) (x : Ident) (y : RValue)
+                   (h₁ : st.WF) (h₂ : evalVar st x = .ok (y, st'))
 : y.WF st'.mem ∧ st'.WF := by
   unfold evalVar at h₂
   simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h₂
@@ -604,18 +697,14 @@ theorem evalVar_wf (st st' : State)
   . obtain ⟨ rfl, rfl ⟩ := h₂
     simp at h₃
     simp [h₃, h₁]
-  split at h₂ <;> try simp at h₂
   obtain ⟨ rfl, rfl ⟩ := h₂
-  rename_i h₄
-  simp at h₃ h₄ ⊢
+  rename_i env params body
+  simp
   refine (State.allocWith_wf _ _ _ _ ?_ ?_ ?_ rfl).2
   on_goal 3 => simp
   . apply h₁
-  simp
-  apply Environment.close_wf at h₄
-  . assumption
-  . apply h₁.mem
-  . assumption
+  simp at h₃
+  simp [h₃]
 
 @[simp]
 theorem checkRef_none_iff (st : State) (x : Ident)
@@ -701,52 +790,45 @@ theorem evalAssign_wf (st st' : State)
   simp at hx'
   subst x
   split at hx <;> try simp at hx
-  simp at h₂ h₃
-  split at hx <;> try simp at hx
-  . subst hx
-    simp [State.WF_iff]
-    rename_i h
-    and_intros
-    on_goal 2 =>
-      apply Environment.assign_memory_wf at h
-      . assumption
+  . simp at h₂ h₃
+    split at hx <;> try simp at hx
+    . subst hx
+      simp [State.WF_iff]
+      rename_i res h
+      and_intros
+      on_goal 2 =>
+        apply Environment.assign_memory_wf at h
+        . assumption
+        . exact h₁.mem
+        . assumption
+      apply Environment.WF_transport st.mem
+      . apply Environment.assign_memory_monotonic at h
+        assumption
       . exact h₁.mem
+      apply Environment.assign_wf at h
       . assumption
-    apply Environment.WF_transport st.mem
-    . apply Environment.assign_memory_monotonic at h
+      . exact h₁.env
+      . assumption
+  . simp at h₂ h₃
+    split at hx <;> try simp at hx
+    rename_i h
+    subst hx
+    simp [State.WF_iff]
+    and_intros
+    . apply Environment.WF_transport st.mem
+      on_goal 2 => apply h₁.mem
+      on_goal 2 => apply h₁.env
+      apply Memory.assign_monotonic
+      apply BoxValue.assign_same_shape
       assumption
+    apply Memory.assign_wf
     . exact h₁.mem
-    apply Environment.assign_wf at h
-    . assumption
-    . exact h₁.env
-    . assumption
-  simp at h₂ h₃
-  split at hx <;> try simp at hx
-  rename_i h
-  subst hx
-  simp [State.WF_iff]
-  and_intros
-  . apply Environment.WF_transport st.mem
-    on_goal 2 => apply h₁.mem
-    on_goal 2 => apply h₁.env
-    apply Memory.assign_monotonic
-    apply BoxValue.assign_same_shape
-    assumption
-  apply Memory.assign_wf
-  . exact h₁.mem
-  . apply BoxValue.assign_wf at h
-    . assumption
-    . apply h₁.mem.mem
-    . assumption
-  . apply BoxValue.assign_same_shape at h
-    rename_i box _ _ _
-    have := h₁.mem.bound box
-    simp [h₂] at this
-    contrapose! this
-    subst this
-    simp at h
-    assumption
-  . exact h₂
+    . apply BoxValue.assign_wf at h
+      . assumption
+      . apply h₁.mem.mem
+      . assumption
+    . apply BoxValue.assign_same_shape at h
+      assumption
 
 abbrev prepareCallEnv (args : List (Ident × RValue))
                       (env : SimpleEnv)
