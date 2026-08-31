@@ -668,21 +668,48 @@ theorem Result.popEnv_wf (r : Result Value)
   | ok x st' =>
     simp [popEnv]
     split
-    case h_2 => simp
-    rename_i xs env x h₁
-    split_ifs with h₂
-    on_goal 2 => simp
-    split
-    . simp
-    rename_i st'' h₃
-    simp at h h₂ h₃
-    obtain ⟨ env', h₃, rfl ⟩ := h₃
-    rw [State.WF_iff] at h
-    rw [h₁] at h h₃
-    simp at h h₃
-    subst env'
-    simp [Finmap.lookup_eq_none.mpr h₂] at h
-    simp [State.WF_iff, h]
+    . rename_i xs env x h₁
+      split_ifs with h₂
+      on_goal 2 => simp
+      split
+      . simp
+      rename_i st'' h₃
+      simp at h h₂ h₃
+      obtain ⟨ env', h₃, rfl ⟩ := h₃
+      rw [State.WF_iff] at h
+      rw [h₁] at h h₃
+      simp at h h₃
+      subst env'
+      simp [Finmap.lookup_eq_none.mpr h₂] at h
+      simp [State.WF_iff, h]
+    . rename_i x _ _ h'
+      simp
+      split <;> simp
+      rename_i st h''
+      simp at h''
+      obtain ⟨ env, h'', rfl ⟩ := h''
+      simp at h
+      unfold Environment.pop at h''
+      split at h'' <;> simp at h''
+      subst h''
+      rename_i xs env h''
+      replace h' : ∀ x', x ≠ .lvalue (.var x') := by
+        intro x'
+        apply h'
+        assumption
+      and_intros
+      on_goal 2 =>
+        obtain ⟨ -, h ⟩ := h
+        simp [State.WF_iff, h''] at h
+        simp [State.WF_iff, h]
+      obtain ⟨ h, - ⟩ := h
+      cases x <;> simp at h' <;> rename_i x
+      . simp at h
+        simp [h]
+      cases x <;> simp at h'
+      rename_i b i
+      simp at h
+      simp [h]
 
 theorem evalVar_wf (st st' : State) (x : Ident) (y : RValue)
                    (h₁ : st.WF) (h₂ : evalVar st x = .ok (y, st'))
@@ -1092,23 +1119,25 @@ theorem prepareDefList_env_wf (mem : Memory) (defs : List Definition)
     simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     simp [SimpleEnv.WF]
-  | case2 x y ds env e h₁ env' ih =>
+  | case2 x y ds env e h₁ h₂ ih =>
     simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     specialize ih _ _ h₁
-    subst env'
-    split_ifs with h₂
-    . apply ih
+    assumption
+  | case3 x y ds env e h₁ h₂ ih =>
+    simp at h
+    obtain ⟨ rfl, rfl ⟩ := h
+    simp [h₁] at ih
     intro x' y' hy'
     by_cases hx' : x' = x
-    . subst x'
+    . subst hx'
       simp at hy'
-      subst y'
+      subst hy'
       simp
     rw [Finmap.lookup_insert_of_ne _ hx'] at hy'
     apply ih
     assumption
-  | case3 x xs body ds env e h₁ env' ih =>
+  | case4 x xs body ds env e h₁ env' ih =>
     simp at h
     obtain ⟨ rfl, rfl ⟩ := h
     specialize ih _ _ h₁
@@ -1226,7 +1255,7 @@ theorem Eval_result_wf (st : State) (e : Expr) (r : Result Value)
     apply Environment.WF_transport st₃.mem
     on_goal 2 => exact ih₂.2.mem
     on_goal 2 => exact ih₂.2.env
-    apply prepareCall_state at h₃
+    apply prepareCall_memory at h₃
     rw [h₃]
     apply Eval_state_monotonic at h₄
     exact h₄.mem

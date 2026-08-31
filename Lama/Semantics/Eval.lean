@@ -398,7 +398,7 @@ def Result.popEnv : Result Value -> Result Value
 | ok x st =>
   let ok : Bool := match st.env, x with
   | .scope xs _, .lvalue (.var x) => x ∉ xs
-  | _, _ => false
+  | _, _ => true
   if ok then match st.popEnv with
   | .none => .err .metatheory
   | .some st => .ok x st
@@ -639,10 +639,8 @@ def prepareDefList : List Definition -> SimpleEnv × Expr
 | [] => (∅, .skip)
 | .var x y :: ds =>
   let (env, e) := prepareDefList ds
-  let env :=
-    if x ∈ env then env
-    else env.insert x $ .var $ .int 0
-  (env, .seq (.assign (.ref x) y) e)
+  if x ∈ env then (env, .seq y e)
+  else (env.insert x $ .var $ .int 0, .seq (.assign (.ref x) y) e)
 | .fn x xs body :: ds =>
   let (env, e) := prepareDefList ds
   let env :=

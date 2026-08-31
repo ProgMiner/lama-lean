@@ -767,8 +767,8 @@ theorem State.allocWith_monotonic (st st' : State)
   apply Memory.allocWith_monotonic
   rfl
 
-theorem State.popEnv_state (r : Result Value) (x : Value) (st : State)
-                           (h : r.popEnv = Result.ok x st)
+theorem Result.popEnv_state (r : Result Value) (x : Value) (st : State)
+                            (h : r.popEnv = Result.ok x st)
 : ∃ st' : State, r = .ok x st' ∧ st'.popEnv = .some st := by
   unfold Result.popEnv at h
   cases r with
@@ -801,9 +801,9 @@ theorem evalVar_state_monotonic (st st' : State)
   apply State.allocWith_monotonic
   rfl
 
-theorem prepareCall_state (mem : Memory) (x : Value) (xs : List RValue)
-                          (st : State) (body : Expr)
-                          (h : prepareCall mem x xs = .ok (st, body))
+theorem prepareCall_memory (mem : Memory) (x : Value) (xs : List RValue)
+                           (st : State) (body : Expr)
+                           (h : prepareCall mem x xs = .ok (st, body))
 : mem = st.mem := by
   unfold prepareCall at h
   simp [Bind.bind, Pure.pure, Except.bind, Except.pure] at h
@@ -932,7 +932,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
     cases z' <;> simp at hr
     obtain ⟨ rfl, rfl ⟩ := hr
     simp [State.LE_iff] at ih₃ ⊢
-    apply prepareCall_state at h₃
+    apply prepareCall_memory at h₃
     grw [<- ih₃.1, h₃]
   | callErr₁ => simp at hr
   | callErr₂ => simp at hr
@@ -975,7 +975,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
   | loopErrL => simp at hr
   | loopErrR => simp at hr
   | caseOk st st' x₁ bs y₁ env x₂ res h₁ h₂ h₃ ih₁ ih₂ =>
-    apply State.popEnv_state at hr
+    apply Result.popEnv_state at hr
     obtain ⟨ str, rfl, hr ⟩ := hr
     simp at ih₁ ih₂
     grw [ih₁]
@@ -997,7 +997,7 @@ theorem Eval_state_monotonic (st st' : State) (e : Expr) (x : Value)
   | caseErr₁ => simp at hr
   | caseErr₂ => simp at hr
   | scope st x₁ env x₂ res h₁ h₂ ih =>
-    apply State.popEnv_state at hr
+    apply Result.popEnv_state at hr
     obtain ⟨ str, rfl, hr ⟩ := hr
     simp at ih
     unfold State.popEnv at hr
