@@ -16,7 +16,9 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Ast/Pattern.lean` — `Pattern` (pattern language incl. 6 value-type tags)
 - `Lama/Ast/Expr.lean` — Mutual `Expr`/`Scope`/`Definition` + `abbrev Program := Scope`
 - `Lama/Ast/Closed.lean` — Static closedness predicates: `Context` (lexical context, a `Finmap` from `Ident` to `Bool`; `true` = variable binding, `false` = function definition) and the mutual `Expr.IsClosed`/`IsClosedList`/`IsClosedBranches` + `Definition.IsClosed`/`IsClosedList` predicates — an expression is closed when every referenced name is bound in the context; `.ref x` additionally requires a **variable** binding
+- `Lama/Ast/WellFormed.lean` — Static value-category well-formedness: `Category` (`val` | `ref (xs : Finset Ident)`, the two-constructor collapse of the spec's `Ref | Val | Void | Weak` attribute system; `.ref` carries the payload of variable names the position's result may denote) and the mutual inductive judgment `Expr.WF : Expr → Category → Prop` (bottom-up category inference), with proven uniqueness (`Expr.WF_unique`), executable category inference (`Expr.inferCategory`), and `Definition.WF` (definition only; the `WF ⇒ no .lvalue error` capstone is future work)
 - `Lama/Ast.lean` — Umbrella module
+- `Lama/Semantics.lean` — Semantics umbrella module
 - `Lama/Semantics/Eval.lean` — All semantic definitions: the runtime value types, the step-level evaluation helpers, and the `Eval`/`EvalList` inductive relations. `prepareDefList`'s duplicate-`var` handling is load-bearing for closedness soundness (see Closedness Invariant)
 - `Lama/Semantics/Unique.lean` — `Eval_unique` proving determinism of evaluation
 - `Lama/Semantics/Monotonic.lean` — `SameShape` relations on the environment/box types (reflexive, symmetric, transitive); `BoxValue.SameShape` is structural (compares sizes for `str`/`arr`, tags and lengths for `sexp`, `ClosedEnv.SameShape` for `closure`); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder` instances; capstones `Eval_state_monotonic` and `EvalList_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`). Defines the generic `Except.SameShape` relational lifting combinator
@@ -82,7 +84,7 @@ User-defined infix operators slot in by relative precedence (`at`/`before`/`afte
   - SM: returns `0` for int/box; **fails** for box/box (`failwith "unexpected operands"`).
   - x86-64: a runtime trap function exists ("Comparing BOXED and UNBOXED value"), but branch 1.30 emits no jump to it — comparisons compile to a bare `cmpq`, so the trap appears to be dead code.
   - The Lean model uses `RValue` equality (int/int: value, box/box: address/identity, int/box: never equal), never errors. This is a **deliberate over-approximation**: it matches none of the engines exactly (it is closest to the SM's int/box → 0 rule, but SM still fails on box/box).
-- **Division / modulo by zero**: Interpreter OCaml `/` raises `Division_by_zero`; compiled x86-64 `idivq` → SIGFPE; SM traps. The Lean model returns `Int.tdiv n 0 = 0` / `Int.tmod n 0 = 0`.
+- **Division / modulo by zero**: Interpreter OCaml `/` raises `Division_by_zero`; compiled x86-64 `idivq` → SIGFPE; SM traps. The Lean model returns `Int.tdiv n 0 = 0` / `Int.tmod n 0 = n` (rem-by-zero yields the dividend).
 - **Division rounding**: Truncated division (`Int.tdiv` / `Int.tmod`) matches OCaml `(/)` / `(mod)` for all practical cases.
 
 ### Definition initialization order
@@ -185,7 +187,7 @@ Where the Lean model diverges from compiled Lama semantics, the direction of sou
 
 - **`==`/`!=` on mixed types**: Model never errors where compiled engines fail or trap (see "Operator semantics across engines"). Sound over-approximation. Adequacy (`Eval … .ok ⇒ compiled yields same`) holds only for programs that never compare a box to an int/box at runtime.
 - **Division by zero**: Model returns 0; compiled traps (SIGFPE). Intentional simplification to avoid modeling hardware traps.
-- **Escaping local l-values via `Result.popEnv`**: If a `case`/`scope` returns `ref x` where `x` is a popped local binding, the model produces `.err`. The interpreter also errors (`State.drop` → lookup fails). Compiled SM/x86 **do not** — the stack frame persists, escaped references silently succeed. The model is **stricter** than compiled. Adequacy is one-directional: `Eval … .ok ⇒ compiled ok` holds; `Eval … .err ⇒ compiled errors` does **not** hold for this case. Faithful modeling would require `LValue.slot (b : Box)` instead of name-based l-values.
+- **Escaping local l-values via `Result.popEnv`**: If a `case`/`scope` returns `ref x` where `x` is a popped local binding, the model produces `.err`. The interpreter also errors (`State.drop` → lookup fails). Compiled SM/x86 **do not** — the stack frame persists, escaped references silently succeed. The model is **stricter** than compiled. Adequacy is one-directional: `Eval … .ok ⇒ compiled ok` holds; `Eval … .err ⇒ compiled errors` does **not** hold for this case. L-values are name-based (`LValue.var (x : Ident)`) by deliberate design choice. The strictness matches the interpreter, the spec's reference engine, so the asymmetry is a compiled-engines infidelity, not a model defect; the static side mirrors it with the `Disjoint` premises of the `caseRef`/`scopeRef` constructors of `Ast/WellFormed.lean`.
 - **`assign` always returns RHS (`atr = Val`)**: The Lean AST has no `atr` field, so `Void`/`Weak` modes must be desugared at the AST level by a front-end before reaching the core. This desugaring is not implemented in-repo; `Weak` is representable via `seqOk`, but `Void` would need an `Ignore` node (excluded — covered by `seq` discarding `fst`).
 - **Duplicate names in one scope**: Compiled Lama rejects duplicates at compile time, so no compiled program is affected (the model's divergence from `lamac -i`'s sequential-assign semantics is described under "`lamac` behavior"; the model's own last-definition-wins rule and its soundness role are described under "Closedness Invariant"). Divergence is observable only when a later initializer references the duplicated name.
 - **Closure slot write-back timing**: Observable difference in re-entrant calls: model = compiled ≠ interpreter (see "Closure capture and write-back").
@@ -245,10 +247,100 @@ All remaining preservation theorems follow the same pattern: a step-level operat
 ### Design notes
 
 - **Per-type WF predicates**: every semantic type has a dedicated `.WF` predicate over the relevant state/memory, with `@[simp]` lemmas unfolding each variant.
-- **Transport theorems**: every per-type WF predicate has a `_transport` theorem moving it along the `Memory.LE`/`State.LE` preorder (enlarging memory to a WF superset preserves WF). `LValue.WF_transport` is the most involved — it threads `Environment.SameShape` from `State.LE` through the lookup chain to show the looked-up r-value is preserved.
-- **Proof style**: `fun_induction assign` for the recursive `Environment.assign` proofs (same pattern as `Eval.lean`/`Monotonic.lean`). `grw` (guided rewrite) and `simp` over WF equalities are the standard memory-cell arguments. Error cases require no work (`Result.ok` is inconsistent with error hypotheses, so `simp at hr` dispatches them).
+- **Transport theorems**: each memory-relevant per-type WF predicate has a `_transport` theorem moving it along the `Memory.LE`/`State.LE` preorder (enlarging memory to a WF superset preserves WF; `EnvValue.WF`/`EnvLookup.WF` transport through their containing `SimpleEnv`/`ClosedEnv` predicates instead). `LValue.WF_transport` is the most involved — it threads `Environment.SameShape` from `State.LE` through the lookup chain to show the looked-up r-value is preserved.
+- **Proof style**: `fun_induction assign` for the recursive `Environment.assign` proofs (same pattern as `Monotonic.lean`). `grw` (guided rewrite) and `simp` over WF equalities are the standard memory-cell arguments. Error cases require no work (`Result.ok` is inconsistent with error hypotheses, so `simp at hr` dispatches them).
 - **`caseOk`/`scope` proof pattern**: extract an existential from `Result.popEnv`, then reason about `Environment.pop` — an "unfold the pop, inspect the split" pattern.
 - **Tight coupling to `Eval` rule shapes**: `Eval_result_wf`, `Eval_no_metatheory_error`, `Eval_state_closed`, and `Eval_no_name_error` pattern-match on every constructor of `Eval`/`EvalList`; any new rule requires extending these inductions.
+
+## Static Well-Formedness (Value Categories)
+
+The `Ast/WellFormed.lean` module defines `Category` (`val` | `ref (xs : Finset Ident)`)
+and the mutual inductive judgment `Expr.WF : Expr → Category → Prop` (with its
+`Definition.WF` companion) — the core analog of the spec's (§2.4) attribute judgment
+`e : atr` over `Ref | Val | Void | Weak`. The judgment **derives** the value category
+bottom-up: the core AST is post-attribution — a fixed AST — so the category is an
+inferred property, not an input (top-down threading is the compiler's mechanism).
+The goal (capstone not yet proven) is: **`e.WF .val` ⇒ evaluation of `e` never yields
+`Error.lvalue`**.
+
+### Design decisions (load-bearing for the future capstone)
+
+- **Post-attribution core**: the Lean AST models the result of reference inference, so
+  `Void`/`Weak` are gone (desugared by the front end — see Model Adequacy Limits); only
+  the l-value/r-value split survives as `Category`.
+- **Category profile**: the judgment derives the category **bottom-up** — leaves
+  conclude their categories (`ref x` infers the exact singleton `.ref {x}` — the only
+  variable name it can denote; `elemRef` infers the canonical empty `.ref {}` — an
+  element l-value denotes no variable name, so binder disjointness never constrains it);
+  every r-value producer concludes `.val` (with its subexpressions judged `.val`).
+  Result-propagating forms: `seq` concludes its **second** component's category, with
+  the first at an arbitrary (discarded) category; `ite`/`case`/`scope` are split into
+  `Val`/`Ref` rule pairs by result category; `iteRef` concludes the **union** of its
+  branch payloads (a ref/int-mixed `ite` is not derivable — matching the spec's
+  `if … : a` same-attribute rule); `loop` always concludes `.val` (runtime `loopStop`
+  yields the r-value ⊥) with its body at an arbitrary discarded category; `assign`
+  concludes `.val` with the LHS judged at `.ref xs` for an arbitrary `xs` (names die
+  at `:=`). The `.ref` category carries a `Finset Ident` payload — the set of variable
+  names the position's result may denote; at `.val` there is no payload at all.
+- **Local-lvalue escape check**: `case`/`scope` results pass through `Result.popEnv`,
+  which rejects a `.lvalue (.var x)` whose `x` is bound by the popped frame (pattern
+  binders / definition names). The predicate excludes this by **disjointness**:
+  `caseRef` judges branch i at `.ref xs[i]` requiring `Disjoint xs[i] (pattern_i.vars.toFinset)`
+  and concludes the union `.ref (Finset.univ.sup xs)`; `scopeRef` judges the body at
+  `.ref xs` requiring `Disjoint xs (Definition.names ds).toFinset` and concludes the
+  exact same `.ref xs`. This is exact w.r.t. `popEnv`: the runtime frame's keys are
+  exactly the syntactic binder set (pattern vars / def names, dedup'd) and no
+  body-reachable operation adds keys to the top frame. At `.val` (the `Val` rule pairs)
+  no name conditions exist — by construction, there is no payload.
+- **Deterministic category**: `Expr.WF_unique` proves that each expression derives at most one
+  category — leaves conclude exact payloads, composite conclusions are fixed shapes or
+  inherited/unioned from sub-derivations, and the arbitrary category/payload binders
+  (`seq`'s first component, `loop`'s body, `assign`'s LHS payload) sit only in discarded
+  positions. The same module also provides executable `Expr.inferCategory`/list and
+  branch checks, together with `Decidable` instances for category well-formedness.
+- **`assign` is `.val`-only with LHS `WF .ref`**: `:=` LHS parses at `Reff`, so an
+  `assign` can never itself be an LHS (the SM compiler rejects non-`Ref`/`ElemRef` LHS).
+- **Soundness in two directions** (both needed for the capstone, by mutual induction on
+  `Eval`): `WF .val e ⇒` evaluation yields r-values only (no l-value reaches a sink),
+  and `WF (.ref xs) e ⇒` evaluation yields l-values or errors, never an r-value, with
+  every variable l-value result's name ∈ `xs` — the conclusion payload is the exact
+  answer (`ref` contributes its singleton, `iteRef` unions its branches, `caseRef`
+  unions per-branch payloads, `scopeRef`/`seq` pass their body/second component's
+  payload through); the assign LHS premise is used only existentially
+  (∃ xs, l.WF (.ref xs) — the l-value is consumed by `:=`, its name is irrelevant) —
+  so `evalAssignR`'s `toLValue?` cannot
+  fail on a `WF .ref` LHS and `popEnv` cannot reject at enclosing `case`/`scope`.
+- **`commitCall` gap**: a closure **read from memory** may carry a body that is not
+  `WF .val`; the syntactic half (all `fn`/`lambda` bodies are `.val`) is covered, but the
+  transport needs a runtime invariant (the runtime `WellFormed.lean`'s
+  `BoxValue.WF_closure` does **not** constrain closure bodies) — mirroring how
+  `Eval_no_name_error` needs a well-formed closed state.
+- Patterns are unconstrained (failed match is `.runtime`, not a category error); no
+  lexical context is carried — name residence belongs to `Ast/Closed.lean`.
+
+### `.lvalue` trigger-site coverage
+
+Every trigger site of `Error.lvalue` in `Semantics/Eval.lean` is ruled out by a side
+condition of `Expr.WF` — this is what makes the (future) capstone provable:
+
+| Trigger site | Covered by |
+|---|---|
+| `evalBinop` `.eq`/`.ne` (direct `Value.toRValue?`), arith/cmp (via `Value.toInt?`), `.or`/`.and` (via `Value.toBool?`) | operands are `WF .val` |
+| `evalElem` (`Value.toBox?`/`Value.toNat?`), `evalElemRef`, `evalAssign` RHS (`Value.toRValue?`), `chooseCase` scrutinee (`Value.toRValue?`) | those subexpressions are `WF .val` |
+| `prepareCall` callee (`Value.toBox?`), `ite`/`loop` conditions (`Value.toBool?`) | those subexpressions are `WF .val` |
+| `evalAssignR` LHS `Value.toLValue?` failure | LHS is `WF .ref` |
+| `EvalList.err` (an l-value in an expression list) | the `arr`/`sexp`/`call` premises judge every element/callee/argument `.val` |
+| `Result.popEnv` escaping local l-value | the `Disjoint` premises of the `caseRef`/`scopeRef` constructors |
+| `commitCall` l-value returned by a function body | `Definition.fn`/`Expr.lambda` bodies are `WF .val` (see the `commitCall` gap above) |
+
+- **Spec source caveat**: the visible rules in spec §2.4 (`spec/02.04.wellformedness.tex`
+  upstream) are `Weak`-collapsed; the full four-attribute rule block (with the polymorphic
+  `seq`/`if` rules) lives in that file's commented-out part and in the reference OCaml
+  parser (`src/Language.ml`, the `atr` threading).
+- **Parser guards**: an `Reff` position accepts only a variable or an element access
+  (`notRef` guards + postfix-chain guard in `Language.ml`); the one way the reference front
+  end puts an r-value form in an l-value position is the unary-minus quirk `-x[i] := v`
+  (every engine then rejects it) — `WF` correctly rules such programs ill-formed.
 
 ## Closedness Invariant
 
@@ -283,7 +375,7 @@ The `Ast/Closed.lean` + `Semantics/Closed.lean` pair formalizes a **static close
 
 ## Lean Technical Notes
 
-- `DecidableEq` cannot be auto-derived for `Pattern` or the mutual `Expr`/`Scope`/`Definition` block (Lean limitation with nested inductives through `List`/`Option`/`×`). Workaround in-repo: `Pattern` gets a hand-written `DecidableEq` built from a private `beq`/`beqs` pair plus `beq_iff` biconditional; the mutual block has no `DecidableEq` at all
+- `DecidableEq` cannot be auto-derived for `Pattern` or the mutual `Expr`/`Scope`/`Definition` block (Lean limitation with nested inductives through `List`/`Option`/`×`). Workaround in-repo: `Pattern` gets a hand-written `DecidableEq` built from a private `beq`/`beqs` pair plus `beq_univ` biconditional; the mutual block has no `DecidableEq` at all
 - The auto-generated induction principle for the mutual block is weak for nested positions; semantics code over nested positions needs well-founded recursion or a custom eliminator
 - `Inhabited` exists on the mutual block (hand-written `instance : Inhabited Expr where default := .skip`; `Definition`/`Scope` derive from it)
 - `Result`/`State`/`Environment` and most runtime semantic types derive no `Repr` — evaluation results cannot be inspected with `#eval`; use `simp`/`decide`-style proofs instead

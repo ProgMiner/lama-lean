@@ -166,3 +166,58 @@ theorem Definition.IsClosedList_iff (ctx : Context)
       intro d' hd'
       apply h
       simp [hd']
+
+mutual
+
+instance Expr.isClosed (ctx : Context)
+: (x : Expr) -> Decidable (x.IsClosed ctx)
+| .skip => inferInstance
+| .var _ => inferInstance
+| .ref _ => inferInstance
+| .int _ => inferInstance
+| .str _ => inferInstance
+| .arr xs => Expr.isClosedList ctx xs
+| .sexp _ xs => Expr.isClosedList ctx xs
+| .lambda xs b => b.isClosed (ctx.addVars xs)
+| .binop _ l r => @instDecidableAnd _ _ (l.isClosed ctx) (r.isClosed ctx)
+| .elem x i => @instDecidableAnd _ _ (x.isClosed ctx) (i.isClosed ctx)
+| .elemRef x i => @instDecidableAnd _ _ (x.isClosed ctx) (i.isClosed ctx)
+| .call x xs => @instDecidableAnd _ _ (x.isClosed ctx) (Expr.isClosedList ctx xs)
+| .assign l r => @instDecidableAnd _ _ (l.isClosed ctx) (r.isClosed ctx)
+| .seq l r => @instDecidableAnd _ _ (l.isClosed ctx) (r.isClosed ctx)
+| .ite c t e =>
+  @instDecidableAnd _ _ (c.isClosed ctx)
+    $ @instDecidableAnd _ _ (t.isClosed ctx) (e.isClosed ctx)
+| .loop c b => @instDecidableAnd _ _ (c.isClosed ctx) (b.isClosed ctx)
+| .case x bs =>
+  @instDecidableAnd _ _ (x.isClosed ctx)
+    $ Expr.isClosedBranches ctx bs
+| .scope ⟨ ds, x ⟩ =>
+  @instDecidableAnd _ _ (x.isClosed (ctx.addDefs ds))
+    $ Definition.isClosedList (ctx.addDefs ds) ds
+
+instance Expr.isClosedList (ctx : Context)
+: (xs : List Expr) -> Decidable (Expr.IsClosedList ctx xs)
+| [] => .isTrue (by simp)
+| x::xs => @instDecidableAnd _ _ (x.isClosed ctx) (Expr.isClosedList ctx xs)
+
+instance Expr.isClosedBranches (ctx : Context)
+: (bs : List (Pattern × Expr)) -> Decidable (Expr.IsClosedBranches ctx bs)
+| [] => .isTrue (by simp)
+| (p, x)::bs =>
+  @instDecidableAnd _ _ (x.isClosed (ctx.addVars p.vars))
+    $ Expr.isClosedBranches ctx bs
+
+instance Definition.isClosed (ctx : Context)
+: (d : Definition) -> Decidable (d.IsClosed ctx)
+| .var _ x => x.isClosed ctx
+| .fn _ xs b => b.isClosed (ctx.addVars xs)
+
+instance Definition.isClosedList (ctx : Context)
+: (ds : List Definition) -> Decidable (Definition.IsClosedList ctx ds)
+| [] => .isTrue (by simp)
+| d::ds =>
+  @instDecidableAnd _ _ (d.isClosed ctx)
+    $ Definition.isClosedList ctx ds
+
+end
