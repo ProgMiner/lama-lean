@@ -913,10 +913,10 @@ theorem prepareCall_state_wf (mem : Memory) (x : Value) (xs : List RValue)
   apply List.of_mem_zip at hy'
   exact h₂ _ hy'.2
 
-theorem evalPattern_env_wf (mem : Memory) (x : RValue)
-                           (p : Pattern) (env : SimpleEnv)
-                           (h₁ : evalPattern mem x p = .some env)
-                           (h₂ : mem.WF) (h₃ : x.WF mem)
+theorem evalPattern_wf (mem : Memory) (x : RValue)
+                       (p : Pattern) (env : SimpleEnv)
+                       (h₁ : evalPattern mem x p = .some env)
+                       (h₂ : mem.WF) (h₃ : x.WF mem)
 : env.WF mem := by
   induction p
   using Pattern.rec (motive_2 := fun ps => (xs : List RValue) -> (env : SimpleEnv) -> evalPatternList mem xs ps = .some env -> (∀ x ∈ xs, x.WF mem) -> env.WF mem)
@@ -1064,7 +1064,7 @@ theorem evalPatternList_env_wf (mem : Memory) (xs : List RValue)
       split at h₁ <;> simp at h₁
       rename_i env₂ henv₂
       subst env
-      apply evalPattern_env_wf at henv₁
+      apply evalPattern_wf at henv₁
       apply ih at henv₂
       simp [h₂] at henv₁ henv₂
       apply SimpleEnv.union_wf
@@ -1087,7 +1087,7 @@ theorem chooseCaseR_env_wf (mem : Memory) (x : RValue)
   | case2 p e bs env h =>
     simp at h₁
     obtain ⟨ rfl, rfl ⟩ := h₁
-    apply evalPattern_env_wf at h
+    apply evalPattern_wf at h
     apply h <;> assumption
   | case3 p e bs h ih =>
     apply ih at h₁
