@@ -23,11 +23,12 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Semantics/Unique.lean` — `Eval_unique` proving determinism of evaluation
 - `Lama/Semantics/Monotonic.lean` — `SameShape` relations on the environment/box types (reflexive, symmetric, transitive); `BoxValue.SameShape` is structural (compares sizes for `str`/`arr`, tags and lengths for `sexp`, `ClosedEnv.SameShape` for `closure`); `Memory.LE` and `State.LE` orderings (monotonicity: `bound` grows, existing cells preserve shape, environment preserves shape); `Preorder` instances; capstones `Eval_state_monotonic` and `EvalList_state_monotonic` (evaluation is monotonic: `Eval st e (.ok x st') → st ≤ st'`). Defines the generic `Except.SameShape` relational lifting combinator
 - `Lama/Semantics/WellFormed.lean` — Runtime well-formedness invariant: per-type WF predicates for every semantic type, including `ClosedEnv.WF`; `Memory.WF` is a structure with two fields: `bound` (prefix-defined — cell `b` is undefined iff `¬ b.WF mem`) and `mem` (every cell's content is WF). `State.WF` is a structure with `env`/`mem` fields. Transport theorems move WF along the `Memory.LE`/`State.LE` preorder. Preservation theorems for every step-level operation; capstones `Eval_result_wf` and `EvalList_result_wf` (a well-formed state evaluates to a well-formed result)
-- `Lama/Semantics/Category.lean` — Runtime category invariant: `CategoryWF` predicates for environments, memory, and states ensure that closure bodies are statically `.val`-well-formed, together with `HasCategory` for runtime values and the capstone `Eval_category_wf` (evaluation preserves the static category of the result and runtime `CategoryWF`)
+- `Lama/Semantics/Category.lean` — Runtime category invariant: `CategoryWF` predicates for environments, memory, and states ensure that closure bodies are statically `.val`-well-formed, together with `HasCategory` for runtime values and the capstones `Eval_category_wf` and `EvalList_category_wf` (evaluation, including expression lists, preserves the static category of the result and runtime `CategoryWF`)
 - `Lama/Semantics/WellFormed.lean` names the pattern-binding preservation lemma `evalPattern_wf` (formerly `evalPattern_env_wf`)
 - `Lama/Semantics/Error/Metatheory.lean` — Soundness proof: `.metatheory` errors never arise during well-formed evaluation (capstone `Eval_no_metatheory_error`). Key lemmas include `Environment.lookup_metatheory_error`, `Environment.close_none`, `Environment.assign_metatheory_error`, `evalVar_metatheory_error`, `checkRef_some_metatheory`, `evalElem_metatheory_error`, `evalAssign_metatheory_error`
 - `Lama/Semantics/Closed.lean` — Soundness of the closedness condition, runtime side. Extends the static `IsClosed` predicates to runtime data: per-type `IsClosed` predicates (a closure's captured environment and body must be closed; a state is closed when its memory cells and environment chain are), plus `X.context` derivations (SimpleEnv/ClosedEnv/Environment/State project a runtime `Context` mirroring the static one — names mapped to `isVar`: bound-as-var vs bound-as-fn). Transport theorems move `IsClosed`/`context` along `SameShape` and the `Memory.LE`/`State.LE` preorder (`State.context_transport`: the context is invariant under evaluation — the key bridge for propagating closedness across sub-evaluations). Preservation for every step-level operation, incl. `prepareDefList_env_context` (`ctx.addDefs ds = xs.context ∪ ctx`); capstones `Eval_state_closed` and `EvalList_state_closed`. Also extends `Finmap` with a `map` operation and its simp lemmas
 - `Lama/Semantics/Error/Name.lean` — Soundness proof: `.name` errors never arise in well-formed **closed** evaluation (capstone `Eval_no_name_error`). Key lemmas include `evalVar_name_error` (`evalVar st x = .error .name → x ∉ st.context`), `checkRef_some_name` (`checkRef st x = .some .name → st.context.lookup x ≠ .some true`), and `_no_name_error` lemmas for the step-level operations
+- `Lama/Semantics/Error/LValue.lean` — Soundness proof: `.lvalue` errors never arise during category-well-formed evaluation (capstone `Eval_no_lvalue_error`). It characterizes l-value conversion failures at every step-level trigger (`evalBinop_lvalue_error`, `evalElem_lvalue_error`, `evalElemRef_lvalue_error`, `evalAssign_lvalue_error`, `prepareCall_lvalue_error`, `commitCall_lvalue_error`, `chooseCase_lvalue_error`), proves unconditional non-occurrence for environment/box lookup and assignment helpers, and discharges escaping local l-values using the `caseRef`/`scopeRef` disjointness premises. The module also contains `prepareDefList_names` and `SimpleEnv.SameShape_mem` helper lemmas.
 - `Lama.lean` — Root umbrella importing `Lama.Ast` + `Lama.Semantics`
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
 - Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch: `defaultTargets = ["lama"]` in `lakefile.toml` points at a commented-out `lean_exe` stub; the only real target is the `Lama` lean_lib. CI runs `leanprover/lean-action` whose auto-configured `lake build` hits the same mismatch)
@@ -252,7 +253,7 @@ All remaining preservation theorems follow the same pattern: a step-level operat
 - **Transport theorems**: each memory-relevant per-type WF predicate has a `_transport` theorem moving it along the `Memory.LE`/`State.LE` preorder (enlarging memory to a WF superset preserves WF; `EnvValue.WF`/`EnvLookup.WF` transport through their containing `SimpleEnv`/`ClosedEnv` predicates instead). `LValue.WF_transport` is the most involved — it threads `Environment.SameShape` from `State.LE` through the lookup chain to show the looked-up r-value is preserved.
 - **Proof style**: `fun_induction assign` for the recursive `Environment.assign` proofs (same pattern as `Monotonic.lean`). `grw` (guided rewrite) and `simp` over WF equalities are the standard memory-cell arguments. Error cases require no work (`Result.ok` is inconsistent with error hypotheses, so `simp at hr` dispatches them).
 - **`caseOk`/`scope` proof pattern**: extract an existential from `Result.popEnv`, then reason about `Environment.pop` — an "unfold the pop, inspect the split" pattern.
-- **Tight coupling to `Eval` rule shapes**: `Eval_result_wf`, `Eval_category_wf`, `Eval_no_metatheory_error`, `Eval_state_closed`, and `Eval_no_name_error` pattern-match on every constructor of `Eval`/`EvalList`; any new rule requires extending these inductions.
+- **Tight coupling to `Eval` rule shapes**: `Eval_result_wf`, `Eval_category_wf`, `Eval_no_metatheory_error`, `Eval_state_closed`, `Eval_no_name_error`, and `Eval_no_lvalue_error` pattern-match on every constructor of `Eval`/`EvalList`; any new rule requires extending these inductions. `EvalList_category_wf` is also coupled to the list constructors.
 
 ## Static Well-Formedness (Value Categories)
 
@@ -262,7 +263,7 @@ and the mutual inductive judgment `Expr.WF : Expr → Category → Prop` (with i
 `e : atr` over `Ref | Val | Void | Weak`. The judgment **derives** the value category
 bottom-up: the core AST is post-attribution — a fixed AST — so the category is an
 inferred property, not an input (top-down threading is the compiler's mechanism).
-Category soundness is proved in runtime form by `Eval_category_wf`: evaluation of a statically categorized expression preserves the corresponding category of the result and runtime `CategoryWF`. A separate theorem stated directly as **`e.WF .val` ⇒ evaluation of `e` never yields `Error.lvalue`** may be derived from this invariant, but is not necessarily formulated as a standalone capstone.
+Category soundness is proved in runtime form by `Eval_category_wf` and `EvalList_category_wf`: evaluation of a statically categorized expression or a list of `.val` expressions preserves the corresponding category of the result and runtime `CategoryWF`. The separate capstone `Eval_no_lvalue_error` proves the stronger statement that, for any derived category (`.val` or `.ref xs`), category-well-formed evaluation never yields `Error.lvalue`; it also rules out escaping local l-values rejected by `Result.popEnv`.
 
 ### Design decisions (load-bearing for category soundness)
 
@@ -323,8 +324,10 @@ Category soundness is proved in runtime form by `Eval_category_wf`: evaluation o
 ### `.lvalue` trigger-site coverage
 
 Every trigger site of `Error.lvalue` in `Semantics/Eval.lean` is ruled out by a side
-condition of `Expr.WF`; the runtime category capstone `Eval_category_wf` provides the
-proved preservation invariant behind this soundness result:
+condition of `Expr.WF`; the runtime category capstones `Eval_category_wf` and
+`EvalList_category_wf`, together with the error-characterization lemmas in
+`Semantics/Error/LValue.lean`, provide the proved preservation invariant behind this
+soundness result. The final capstone is `Eval_no_lvalue_error`.
 
 | Trigger site | Covered by |
 |---|---|

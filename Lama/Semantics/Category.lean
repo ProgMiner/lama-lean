@@ -1,5 +1,5 @@
 import Lama.Ast.WellFormed
-import Lama.Semantics.WellFormed
+import Lama.Semantics.Closed
 
 
 namespace Lama.Semantics
@@ -424,14 +424,24 @@ def Value.HasCategory : Value -> Category -> Prop
 | _, _ => False
 
 @[simp]
-theorem Value.HasCategory.val_iff (x : Value)
-: x.HasCategory .val ↔ ∃ y, x = .rvalue y := by
+theorem Value.HasCategory_val (x : Value)
+: x.HasCategory .val <-> ∃ y, x = .rvalue y := by
   cases x <;> simp [Value.HasCategory]
 
 @[simp]
-theorem Value.HasCategory.ref_iff (x : Value) (xs : Finset Ident)
-: x.HasCategory (.ref xs) ↔ ∃ y, x = .lvalue y ∧ y.HasCategory xs := by
+theorem Value.HasCategory_ref (x : Value) (xs : Finset Ident)
+: x.HasCategory (.ref xs) <-> ∃ y, x = .lvalue y ∧ y.HasCategory xs := by
   cases x <;> simp [Value.HasCategory]
+
+@[simp]
+theorem Value.HasCategory_rvalue (x : RValue) (cat : Category)
+: (Value.rvalue x).HasCategory cat <-> cat = .val := by
+  cases cat <;> simp
+
+@[simp]
+theorem Value.HasCategory_lvalue (x : LValue) (cat : Category)
+: (Value.lvalue x).HasCategory cat <-> ∃ xs, cat = .ref xs ∧ x.HasCategory xs := by
+  cases cat <;> simp
 
 theorem evalVar_category_wf (st st' : State)
                             (x : Ident) (y : RValue)
@@ -718,14 +728,22 @@ theorem chooseCaseR_expr_wf_ref (mem : Memory) (x : RValue)
                                 (xs : List.Vector (Finset Ident) bs.length)
                                 (h₁ : ∀ i : Fin bs.length, bs[i].2.WF (Category.ref (xs.get i)))
                                 (h₂ : chooseCaseR mem x bs = .some (env, e))
-: ∃ i : Fin bs.length, e.WF (.ref xs[i]) := by
+: ∃ i : Fin bs.length, e.WF (.ref xs[i]) ∧ ∀ x, x ∈ env <-> x ∈ bs[i].1.vars := by
   fun_induction chooseCaseR with
   | case1 => simp at h₂
   | case2 p e bs env h =>
     simp at h₂
     obtain ⟨ rfl, rfl ⟩ := h₂
     use ⟨ 0, by simp ⟩
-    apply h₁ ⟨ 0, by simp ⟩
+    simp
+    and_intros
+    . apply h₁ ⟨ 0, by simp ⟩
+    . apply evalPattern_context ∅ at h
+      simp at h
+      intro x'
+      apply_fun (x' ∈ ·) at h
+      simp at h
+      simp [h, Finmap.mem_iff]
   | case3 p e bs h ih =>
     simp [h₂] at ih
     specialize ih xs.tail ?_
@@ -747,7 +765,7 @@ theorem chooseCase_expr_wf_ref (mem : Memory) (x : Value)
                                (xs : List.Vector (Finset Ident) bs.length)
                                (h₁ : ∀ i : Fin bs.length, bs[i].2.WF (Category.ref (xs.get i)))
                                (h₂ : chooseCase mem x bs = .ok (env, e))
-: ∃ i : Fin bs.length, e.WF (.ref xs[i]) := by
+: ∃ i : Fin bs.length, e.WF (.ref xs[i]) ∧ ∀ x, x ∈ env <-> x ∈ bs[i].1.vars := by
   unfold chooseCase at h₂
   simp [Bind.bind, Except.bind] at h₂
   split at h₂ <;> simp at h₂
@@ -1092,7 +1110,7 @@ theorem Eval_category_wf (st st' : State) (e : Expr)
       | caseRef _ _ xs _ _ h₃ =>
         apply chooseCase_expr_wf_ref at h₅
         on_goal 3 => assumption
-        obtain ⟨ i, h₅ ⟩ := h₅
+        obtain ⟨ i, h₅, - ⟩ := h₅
         use .ref xs[i]
         and_intros
         . assumption
@@ -1176,3 +1194,28 @@ theorem Eval_category_wf (st st' : State) (e : Expr)
   | err _ _ _ _ _ _ _ _ _ _ _ hr => simp at hr
   | errL _ _ _ _ _ _ _ _ _ _ hr => simp at hr
   | errR _ _ _ _ _ _ _ _ _ _ _ _ _ _ hr => simp at hr
+
+theorem EvalList_category_wf (st st' : State) (es : List Expr)
+                             (xs : List RValue)
+                             (h₁ : st.CategoryWF)
+                             (h₂ : ∀ e ∈ es, e.WF .val)
+                             (h₃ : EvalList st es (.ok xs st'))
+: st'.CategoryWF := by
+  induction es generalizing st st' xs with
+  | nil =>
+    cases h₃ with
+    | nil => assumption
+  | cons e es ih =>
+    cases h₃ with
+    | cons _ st₁ _ _ _ x xs h₃ h₄ =>
+      apply Eval_category_wf at h₃
+      on_goal 3 => assumption
+      on_goal 3 =>
+        apply h₂
+        simp
+      apply ih at h₄
+      . assumption
+      . simp [h₃]
+      intro e he
+      apply h₂
+      simp [he]
