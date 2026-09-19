@@ -1,6 +1,6 @@
 name = "lama"
 version = "0.1.0"
-defaultTargets = ["lama"]
+defaultTargets = ["Lama"]
 
 [[require]]
 name = "mathlib"

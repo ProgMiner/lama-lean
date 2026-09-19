@@ -31,7 +31,7 @@ This project is intended for **reasoning about the semantics** of Lama programs 
 - `Lama/Semantics/Error/LValue.lean` — Soundness proof: `.lvalue` errors never arise during category-well-formed evaluation (capstone `Eval_no_lvalue_error`). It characterizes l-value conversion failures at every step-level trigger (`evalBinop_lvalue_error`, `evalElem_lvalue_error`, `evalElemRef_lvalue_error`, `evalAssign_lvalue_error`, `prepareCall_lvalue_error`, `commitCall_lvalue_error`, `chooseCase_lvalue_error`), proves unconditional non-occurrence for environment/box lookup and assignment helpers, and discharges escaping local l-values using the `caseRef`/`scopeRef` disjointness premises. The module also contains `prepareDefList_names` and `SimpleEnv.SameShape_mem` helper lemmas.
 - `Lama.lean` — Root umbrella importing `Lama.Ast` + `Lama.Semantics`
 - Toolchain: `leanprover/lean4:v4.28.0-rc1`, mathlib dependency
-- Build: `lake build Lama` (plain `lake build` fails due to pre-existing target name mismatch: `defaultTargets = ["lama"]` in `lakefile.toml` points at a commented-out `lean_exe` stub; the only real target is the `Lama` lean_lib. CI runs `leanprover/lean-action` whose auto-configured `lake build` hits the same mismatch)
+- Build: `lake build`
 
 ## Known Spec vs Implementation Divergences
 
